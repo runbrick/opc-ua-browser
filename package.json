@@ -66,6 +66,16 @@
         "command": "opcua.exportNode",
         "title": "Export Node to JSON",
         "icon": "$(export)"
+      },
+      {
+        "command": "opcua.exportNodeToExcel",
+        "title": "Export Node to Excel",
+        "icon": "$(file-excel)"
+      },
+      {
+        "command": "opcua.searchNodes",
+        "title": "Search Nodes",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -79,6 +89,11 @@
           "command": "opcua.refreshConnections",
           "when": "view == opcuaConnections",
           "group": "navigation@2"
+        },
+        {
+          "command": "opcua.searchNodes",
+          "when": "view == opcuaConnections",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -101,6 +116,11 @@
           "command": "opcua.exportNode",
           "when": "view == opcuaConnections && viewItem == opcua-node",
           "group": "export@1"
+        },
+        {
+          "command": "opcua.exportNodeToExcel",
+          "when": "view == opcuaConnections && viewItem == opcua-node",
+          "group": "export@2"
         }
       ]
     }
@@ -120,6 +140,7 @@
     "@types/node": "16.x",
     "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.75.0",
+    "@types/xlsx": "^0.0.35",
     "@typescript-eslint/eslint-plugin": "^5.45.0",
     "@typescript-eslint/parser": "^5.45.0",
     "@vscode/test-electron": "^2.2.0",
@@ -132,6 +153,7 @@
   },
   "dependencies": {
     "node-opcua": "^2.107.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "xlsx": "^0.18.5"
   }
 }

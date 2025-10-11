@@ -9,7 +9,8 @@ import {
     deleteConnectionCommand,
     refreshConnectionsCommand
 } from './commands/connectionCommands';
-import { exportNodeCommand } from './commands/exportCommands';
+import { exportNodeCommand, exportNodeToExcelCommand } from './commands/exportCommands';
+import { searchNodeCommand } from './commands/searchCommands';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('OPC UA Browser extension is now active!');
@@ -81,13 +82,31 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：导出节点
+    // 注册命令：导出节点为 JSON
     const exportNodeCmd = vscode.commands.registerCommand(
         'opcua.exportNode',
         async (node: OpcuaNode) => {
             if (node instanceof OpcuaNode) {
                 await exportNodeCommand(connectionManager, node);
             }
+        }
+    );
+
+    // 注册命令：导出节点为 Excel
+    const exportNodeToExcelCmd = vscode.commands.registerCommand(
+        'opcua.exportNodeToExcel',
+        async (node: OpcuaNode) => {
+            if (node instanceof OpcuaNode) {
+                await exportNodeToExcelCommand(connectionManager, node);
+            }
+        }
+    );
+
+    // 注册命令：搜索节点
+    const searchNodesCmd = vscode.commands.registerCommand(
+        'opcua.searchNodes',
+        async () => {
+            await searchNodeCommand(connectionManager, treeDataProvider, treeView);
         }
     );
 
@@ -100,7 +119,9 @@ export function activate(context: vscode.ExtensionContext) {
         disconnectCmd,
         deleteConnectionCmd,
         showNodeDetailsCmd,
-        exportNodeCmd
+        exportNodeCmd,
+        exportNodeToExcelCmd,
+        searchNodesCmd
     );
 
     // 欢迎消息

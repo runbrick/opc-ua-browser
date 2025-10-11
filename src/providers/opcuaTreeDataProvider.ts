@@ -7,6 +7,12 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     private _onDidChangeTreeData: vscode.EventEmitter<TreeNode | undefined | null | void> = new vscode.EventEmitter<TreeNode | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<TreeNode | undefined | null | void> = this._onDidChangeTreeData.event;
 
+    // 缓存节点的父子关系，用于 getParent
+    private nodeParentMap: Map<string, TreeNode> = new Map();
+
+    // 缓存所有已加载的节点，用于快速搜索
+    private nodeCache: Map<string, OpcuaNode> = new Map();
+
     constructor(private connectionManager: ConnectionManager) {}
 
     refresh(element?: TreeNode): void {
@@ -22,6 +28,21 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         return element;
     }
 
+    getParent(element: TreeNode): TreeNode | undefined {
+        if (element instanceof ConnectionNode) {
+            // 连接节点没有父节点
+            return undefined;
+        }
+
+        if (element instanceof OpcuaNode) {
+            // 从缓存中查找父节点
+            const key = `${element.connectionId}:${element.nodeId}`;
+            return this.nodeParentMap.get(key);
+        }
+
+        return undefined;
+    }
+
     async getChildren(element?: TreeNode): Promise<TreeNode[]> {
         if (!element) {
             // 返回所有连接
@@ -35,7 +56,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
 
         if (element instanceof OpcuaNode) {
             // 返回节点的子节点
-            return this.getChildNodes(element.connectionId, element.nodeId);
+            return this.getChildNodes(element.connectionId, element.nodeId, element);
         }
 
         return [];
@@ -74,20 +95,36 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
             const references = await client.browse('RootFolder');
             console.log(`Found ${references.length} root nodes`);
 
-            return references.map(ref => new OpcuaNode(
+            // 找到连接节点作为父节点
+            const connectionNode = this.getConnectionNodes().find(
+                node => node instanceof ConnectionNode && (node as ConnectionNode).connectionId === connectionId
+            );
+
+            const nodes = references.map(ref => new OpcuaNode(
                 connectionId,
                 ref.nodeId.toString(),
                 ref.displayName.text || ref.browseName.name || '',
                 ref.nodeClass,
                 true
             ));
+
+            // 缓存父子关系和节点
+            if (connectionNode) {
+                nodes.forEach(node => {
+                    const key = `${connectionId}:${(node as OpcuaNode).nodeId}`;
+                    this.nodeParentMap.set(key, connectionNode);
+                    this.nodeCache.set(key, node as OpcuaNode);
+                });
+            }
+
+            return nodes;
         } catch (error) {
             console.error('Error getting root nodes:', error);
             return [];
         }
     }
 
-    private async getChildNodes(connectionId: string, nodeId: string): Promise<TreeNode[]> {
+    private async getChildNodes(connectionId: string, nodeId: string, parentNode?: OpcuaNode): Promise<TreeNode[]> {
         try {
             const client = this.connectionManager.getConnection(connectionId);
             if (!client || !client.isConnected) {
@@ -95,13 +132,24 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
             }
 
             const references = await client.browse(nodeId);
-            return references.map(ref => new OpcuaNode(
+            const nodes = references.map(ref => new OpcuaNode(
                 connectionId,
                 ref.nodeId.toString(),
                 ref.displayName.text || ref.browseName.name || '',
                 ref.nodeClass,
                 this.hasChildren(ref)
             ));
+
+            // 缓存父子关系和节点
+            if (parentNode) {
+                nodes.forEach(node => {
+                    const key = `${connectionId}:${(node as OpcuaNode).nodeId}`;
+                    this.nodeParentMap.set(key, parentNode);
+                    this.nodeCache.set(key, node as OpcuaNode);
+                });
+            }
+
+            return nodes;
         } catch (error) {
             console.error('Error getting child nodes:', error);
             return [];
@@ -111,6 +159,123 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     private hasChildren(ref: ReferenceDescription): boolean {
         // 对象和文件夹通常有子节点
         return ref.nodeClass === NodeClass.Object;
+    }
+
+    // 搜索缓存中的节点
+    searchCachedNodes(searchTerm: string, connectionId?: string): Array<{
+        node: OpcuaNode;
+        path: string;
+        nodeIdPath: string[];
+    }> {
+        const results: Array<{
+            node: OpcuaNode;
+            path: string;
+            nodeIdPath: string[];
+        }> = [];
+
+        const searchTermLower = searchTerm.toLowerCase();
+
+        for (const [key, node] of this.nodeCache.entries()) {
+            // 如果指定了连接ID，只搜索该连接的节点
+            if (connectionId && node.connectionId !== connectionId) {
+                continue;
+            }
+
+            // 检查是否匹配搜索词
+            if (
+                node.displayName.toLowerCase().includes(searchTermLower) ||
+                node.nodeId.toLowerCase().includes(searchTermLower)
+            ) {
+                // 构建路径
+                const path = this.buildNodePath(node);
+                const nodeIdPath = this.buildNodeIdPath(node);
+
+                results.push({
+                    node,
+                    path,
+                    nodeIdPath
+                });
+            }
+        }
+
+        return results;
+    }
+
+    // 构建节点的显示路径
+    private buildNodePath(node: OpcuaNode): string {
+        const pathParts: string[] = [];
+        let currentNode: TreeNode | undefined = node;
+
+        while (currentNode) {
+            if (currentNode instanceof OpcuaNode) {
+                pathParts.unshift(currentNode.displayName);
+            } else if (currentNode instanceof ConnectionNode) {
+                pathParts.unshift(currentNode.config.name || currentNode.config.endpointUrl);
+            }
+
+            const key: string = currentNode instanceof OpcuaNode
+                ? `${currentNode.connectionId}:${currentNode.nodeId}`
+                : '';
+
+            currentNode = key ? this.nodeParentMap.get(key) : undefined;
+        }
+
+        return pathParts.join(' > ');
+    }
+
+    // 构建节点的 NodeId 路径
+    private buildNodeIdPath(node: OpcuaNode): string[] {
+        const pathParts: string[] = [];
+        let currentNode: TreeNode | undefined = node;
+
+        while (currentNode) {
+            if (currentNode instanceof OpcuaNode) {
+                pathParts.unshift(currentNode.nodeId);
+            }
+
+            const key: string = currentNode instanceof OpcuaNode
+                ? `${currentNode.connectionId}:${currentNode.nodeId}`
+                : '';
+
+            currentNode = key ? this.nodeParentMap.get(key) : undefined;
+        }
+
+        return pathParts;
+    }
+
+    // 获取缓存的节点数量
+    getCachedNodeCount(connectionId?: string): number {
+        if (!connectionId) {
+            return this.nodeCache.size;
+        }
+
+        let count = 0;
+        for (const node of this.nodeCache.values()) {
+            if (node.connectionId === connectionId) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    // 清除缓存
+    clearCache(connectionId?: string): void {
+        if (!connectionId) {
+            this.nodeCache.clear();
+            this.nodeParentMap.clear();
+        } else {
+            // 只清除特定连接的缓存
+            const keysToDelete: string[] = [];
+            for (const [key, node] of this.nodeCache.entries()) {
+                if (node.connectionId === connectionId) {
+                    keysToDelete.push(key);
+                }
+            }
+            keysToDelete.forEach(key => {
+                this.nodeCache.delete(key);
+                this.nodeParentMap.delete(key);
+            });
+        }
     }
 }
 

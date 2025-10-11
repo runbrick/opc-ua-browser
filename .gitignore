@@ -6,3 +6,4 @@ dist
 .DS_Store
 .claude
 opcua-browser-0.0.1.vsix
+.codex

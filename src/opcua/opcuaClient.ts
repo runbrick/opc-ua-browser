@@ -257,4 +257,103 @@ export class OpcuaClient {
                 return SecurityPolicy.None;
         }
     }
+
+    async searchNodes(
+        searchTerm: string,
+        progressCallback?: (current: number, total: number) => void,
+        cancellationToken?: { isCancellationRequested: boolean }
+    ): Promise<Array<{
+        nodeId: string;
+        displayName: string;
+        browseName: string;
+        nodeClass: string;
+        path: string;
+        nodeIdPath: string[];
+    }>> {
+        if (!this.session) {
+            throw new Error('Not connected to OPC UA server');
+        }
+
+        const results: Array<{
+            nodeId: string;
+            displayName: string;
+            browseName: string;
+            nodeClass: string;
+            path: string;
+            nodeIdPath: string[];
+        }> = [];
+
+        const searchTermLower = searchTerm.toLowerCase();
+        let searchedNodes = 0;
+        let totalNodes = 0;
+
+        // 递归搜索函数
+        const searchRecursive = async (nodeId: string, path: string = '', nodeIdPath: string[] = [], depth: number = 0): Promise<void> => {
+            // 检查取消标志
+            if (cancellationToken?.isCancellationRequested) {
+                return;
+            }
+
+            // 限制搜索深度以避免无限递归
+            if (depth > 20) {
+                return;
+            }
+
+            try {
+                // 浏览当前节点的子节点
+                const references = await this.browse(nodeId);
+                totalNodes += references.length;
+
+                for (const ref of references) {
+                    if (cancellationToken?.isCancellationRequested) {
+                        return;
+                    }
+
+                    searchedNodes++;
+                    const displayName = ref.displayName.text || ref.browseName.name || '';
+                    const browseName = ref.browseName.name || '';
+                    const currentPath = path ? `${path} > ${displayName}` : displayName;
+                    const currentNodeIdPath = [...nodeIdPath, ref.nodeId.toString()];
+
+                    // 报告进度
+                    if (progressCallback) {
+                        progressCallback(searchedNodes, totalNodes);
+                    }
+
+                    // 检查是否匹配搜索词
+                    if (
+                        displayName.toLowerCase().includes(searchTermLower) ||
+                        browseName.toLowerCase().includes(searchTermLower)
+                    ) {
+                        results.push({
+                            nodeId: ref.nodeId.toString(),
+                            displayName,
+                            browseName,
+                            nodeClass: NodeClass[ref.nodeClass] || 'Unknown',
+                            path: currentPath,
+                            nodeIdPath: currentNodeIdPath
+                        });
+                    }
+
+                    // 如果是对象类型，继续递归搜索
+                    if (ref.nodeClass === NodeClass.Object) {
+                        await searchRecursive(ref.nodeId.toString(), currentPath, currentNodeIdPath, depth + 1);
+                    }
+                }
+            } catch (error) {
+                // 忽略单个节点的错误，继续搜索
+                console.error(`Error searching node ${nodeId}:`, error);
+            }
+        };
+
+        try {
+            // 从根节点开始搜索
+            await searchRecursive('RootFolder', '');
+        } catch (error) {
+            console.error('Error in search:', error);
+            throw error;
+        }
+
+        return results;
+    }
 }
