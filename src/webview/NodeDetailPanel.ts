@@ -7,6 +7,9 @@ export class NodeDetailPanel {
     private static currentPanel: NodeDetailPanel | undefined;
     private readonly panel: vscode.WebviewPanel;
     private disposables: vscode.Disposable[] = [];
+    private currentConnectionId: string | undefined;
+    private currentNodeId: string | undefined;
+    private isRefreshing = false;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -20,8 +23,8 @@ export class NodeDetailPanel {
         this.panel.webview.onDidReceiveMessage(
             async (message) => {
                 switch (message.command) {
-                    case 'refresh':
-                        // Handle refresh if needed
+                    case 'requestNodeData':
+                        await this.handleNodeDataRequest();
                         break;
                 }
             },
@@ -65,6 +68,9 @@ export class NodeDetailPanel {
 
     private async update(connectionId: string, nodeId: string): Promise<void> {
         this.panel.title = 'OPC UA Node Details';
+        this.currentConnectionId = connectionId;
+        this.currentNodeId = nodeId;
+        this.isRefreshing = false;
 
         try {
             const client = this.connectionManager.getConnection(connectionId);
@@ -73,20 +79,73 @@ export class NodeDetailPanel {
                 return;
             }
 
-            // 获取节点属性
             const nodeInfo = await client.readNodeAttributes(nodeId);
-
-            // 获取节点引用
             const references = await client.getReferences(nodeId);
+            const enrichedNodeInfo = this.enrichNodeInfo(nodeInfo);
 
-            this.panel.webview.html = this.getHtml(nodeInfo, references);
+            this.panel.webview.html = this.getHtml(enrichedNodeInfo, references);
         } catch (error) {
             this.panel.webview.html = this.getErrorHtml(`Error loading node details: ${error}`);
         }
     }
 
-    private getHtml(nodeInfo: OpcuaNodeInfo, references: OpcuaReference[]): string {
+    private async handleNodeDataRequest(): Promise<void> {
+        if (this.isRefreshing) {
+            return;
+        }
+
+        if (!this.currentConnectionId || !this.currentNodeId) {
+            return;
+        }
+
+        const client = this.connectionManager.getConnection(this.currentConnectionId);
+        if (!client || !client.isConnected) {
+            await this.panel.webview.postMessage({
+                command: 'nodeDataError',
+                message: 'Not connected to OPC UA server'
+            });
+            return;
+        }
+
+        this.isRefreshing = true;
+
+        try {
+            const nodeInfo = await client.readNodeAttributes(this.currentNodeId);
+            const enrichedNodeInfo = this.enrichNodeInfo(nodeInfo);
+            await this.panel.webview.postMessage({
+                command: 'nodeData',
+                data: enrichedNodeInfo
+            });
+        } catch (error) {
+            await this.panel.webview.postMessage({
+                command: 'nodeDataError',
+                message: error instanceof Error ? error.message : String(error)
+            });
+        } finally {
+            this.isRefreshing = false;
+        }
+    }
+
+    private enrichNodeInfo(
+        nodeInfo: OpcuaNodeInfo
+    ): OpcuaNodeInfo & { formattedDataType?: string } {
+        const formattedDataType = nodeInfo.dataType
+            ? formatDataType(nodeInfo.dataType)
+            : undefined;
+
+        return {
+            ...nodeInfo,
+            formattedDataType
+        };
+    }
+
+    private getHtml(
+        nodeInfo: OpcuaNodeInfo & { formattedDataType?: string },
+        references: OpcuaReference[]
+    ): string {
         const nonce = this.getNonce();
+        const nodeInfoJson = this.serializeForWebview(nodeInfo);
+        const referencesJson = this.serializeForWebview(references);
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -145,7 +204,7 @@ export class NodeDetailPanel {
 
         .value-cell {
             font-family: var(--vscode-editor-font-family);
-            word-break: break-all;
+            word-break: break-word;
         }
 
         .section {
@@ -166,13 +225,29 @@ export class NodeDetailPanel {
             font-style: italic;
             padding: 10px;
         }
+
+        .status-message {
+            margin: 0 0 10px 0;
+            display: none;
+            color: var(--vscode-errorForeground);
+        }
+
+        .status-message.info {
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .meta-text {
+            color: var(--vscode-descriptionForeground);
+            font-size: 0.9em;
+        }
     </style>
 </head>
 <body>
-    <h1>${this.escapeHtml(nodeInfo.displayName || nodeInfo.browseName)}</h1>
+    <h1 id="node-title"></h1>
 
     <div class="section">
         <h2>Attributes</h2>
+        <div id="status-message" class="status-message"></div>
         <table>
             <tr>
                 <th>Attribute</th>
@@ -180,91 +255,310 @@ export class NodeDetailPanel {
             </tr>
             <tr>
                 <td>Node ID</td>
-                <td class="value-cell">${this.escapeHtml(nodeInfo.nodeId)}</td>
+                <td id="attr-nodeId" class="value-cell"></td>
             </tr>
             <tr>
                 <td>Browse Name</td>
-                <td class="value-cell">${this.escapeHtml(nodeInfo.browseName)}</td>
+                <td id="attr-browseName" class="value-cell"></td>
             </tr>
             <tr>
                 <td>Display Name</td>
-                <td class="value-cell">${this.escapeHtml(nodeInfo.displayName)}</td>
+                <td id="attr-displayName" class="value-cell"></td>
             </tr>
             <tr>
                 <td>Node Class</td>
-                <td><span class="node-class-badge">${this.escapeHtml(nodeInfo.nodeClass)}</span></td>
+                <td><span id="attr-nodeClass" class="node-class-badge"></span></td>
             </tr>
-            ${nodeInfo.description ? `
-            <tr>
+            <tr id="row-description">
                 <td>Description</td>
-                <td class="value-cell">${this.escapeHtml(nodeInfo.description)}</td>
+                <td id="attr-description" class="value-cell"></td>
             </tr>
-            ` : ''}
-            ${nodeInfo.value !== undefined ? `
-            <tr>
+            <tr id="row-value">
                 <td>Value</td>
-                <td class="value-cell">${this.formatValue(nodeInfo.value)}</td>
+                <td id="attr-value" class="value-cell"></td>
             </tr>
-            ` : ''}
-            ${nodeInfo.dataType ? `
-            <tr>
+            <tr id="row-statusCode">
+                <td>Status Code</td>
+                <td id="attr-statusCode" class="value-cell"></td>
+            </tr>
+            <tr id="row-sourceTimestamp">
+                <td>Source Timestamp</td>
+                <td id="attr-sourceTimestamp" class="value-cell"></td>
+            </tr>
+            <tr id="row-serverTimestamp">
+                <td>Server Timestamp</td>
+                <td id="attr-serverTimestamp" class="value-cell"></td>
+            </tr>
+            <tr id="row-dataType">
                 <td>Data Type</td>
-                <td class="value-cell">
-                    <strong>${this.escapeHtml(formatDataType(nodeInfo.dataType))}</strong>
-                    ${nodeInfo.dataType !== formatDataType(nodeInfo.dataType) ?
-                        `<br><span style="color: var(--vscode-descriptionForeground); font-size: 0.9em;">NodeId: ${this.escapeHtml(nodeInfo.dataType)}</span>` :
-                        ''}
-                </td>
+                <td id="attr-dataType" class="value-cell"></td>
             </tr>
-            ` : ''}
-            ${nodeInfo.accessLevel !== undefined ? `
-            <tr>
+            <tr id="row-accessLevel">
                 <td>Access Level</td>
-                <td class="value-cell">${nodeInfo.accessLevel}</td>
+                <td id="attr-accessLevel" class="value-cell"></td>
             </tr>
-            ` : ''}
-            ${nodeInfo.userAccessLevel !== undefined ? `
-            <tr>
+            <tr id="row-userAccessLevel">
                 <td>User Access Level</td>
-                <td class="value-cell">${nodeInfo.userAccessLevel}</td>
+                <td id="attr-userAccessLevel" class="value-cell"></td>
             </tr>
-            ` : ''}
         </table>
     </div>
 
     <div class="section">
-        <h2>References (${references.length})</h2>
-        ${references.length > 0 ? `
-        <table>
-            <tr>
-                <th>Reference Type</th>
-                <th>Direction</th>
-                <th>Node ID</th>
-                <th>Browse Name</th>
-                <th>Display Name</th>
-                <th>Node Class</th>
-            </tr>
-            ${references.map(ref => `
-            <tr>
-                <td class="value-cell">${this.escapeHtml(ref.referenceTypeId)}</td>
-                <td>${ref.isForward ? 'Forward' : 'Inverse'}</td>
-                <td class="value-cell">${this.escapeHtml(ref.nodeId)}</td>
-                <td class="value-cell">${this.escapeHtml(ref.browseName)}</td>
-                <td class="value-cell">${this.escapeHtml(ref.displayName)}</td>
-                <td><span class="node-class-badge">${this.escapeHtml(ref.nodeClass)}</span></td>
-            </tr>
-            `).join('')}
-        </table>
-        ` : '<p class="empty-message">No references found.</p>'}
+        <h2>References <span id="references-count"></span></h2>
+        <div id="references-container"></div>
     </div>
 
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
+        const REFRESH_INTERVAL = 1000;
+        const initialNodeInfo = ${nodeInfoJson};
+        const initialReferences = ${referencesJson};
+        let refreshTimer;
 
-        // Add any interactive functionality here
+        const statusMessageEl = document.getElementById('status-message');
+
+        function escapeHtml(text) {
+            if (text === null || text === undefined) {
+                return '';
+            }
+            if (typeof text !== 'string') {
+                text = String(text);
+            }
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) {
+                return '<em>null</em>';
+            }
+            if (typeof value === 'object') {
+                try {
+                    return '<pre>' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre>';
+                } catch (error) {
+                    return '<pre>' + escapeHtml(String(value)) + '</pre>';
+                }
+            }
+            return escapeHtml(String(value));
+        }
+
+        function setText(id, text) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.textContent = text ?? '';
+            }
+        }
+
+        function setHtml(id, html) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.innerHTML = html ?? '';
+            }
+        }
+
+        function toggleRow(id, show) {
+            const row = document.getElementById(id);
+            if (row) {
+                row.style.display = show ? 'table-row' : 'none';
+            }
+        }
+
+        function showStatusMessage(message, type = 'error') {
+            if (!statusMessageEl) {
+                return;
+            }
+
+            if (!message) {
+                statusMessageEl.textContent = '';
+                statusMessageEl.className = 'status-message';
+                statusMessageEl.style.display = 'none';
+                return;
+            }
+
+            statusMessageEl.textContent = message;
+            statusMessageEl.className = 'status-message ' + type;
+            statusMessageEl.style.display = 'block';
+        }
+
+        function renderNodeDetails(info) {
+            if (!info) {
+                return;
+            }
+
+            setText('node-title', info.displayName || info.browseName || info.nodeId || 'Node Details');
+            setText('attr-nodeId', info.nodeId || '');
+            setText('attr-browseName', info.browseName || '');
+            setText('attr-displayName', info.displayName || '');
+
+            const nodeClassEl = document.getElementById('attr-nodeClass');
+            if (nodeClassEl) {
+                nodeClassEl.textContent = info.nodeClass || '';
+            }
+
+            if (info.description) {
+                toggleRow('row-description', true);
+                setHtml('attr-description', escapeHtml(info.description));
+            } else {
+                toggleRow('row-description', false);
+                setHtml('attr-description', '');
+            }
+
+            if (info.value !== undefined) {
+                toggleRow('row-value', true);
+                setHtml('attr-value', formatValue(info.value));
+            } else {
+                toggleRow('row-value', false);
+                setHtml('attr-value', '');
+            }
+
+            if (info.statusCode) {
+                toggleRow('row-statusCode', true);
+                setText('attr-statusCode', info.statusCode);
+            } else {
+                toggleRow('row-statusCode', false);
+                setText('attr-statusCode', '');
+            }
+
+            if (info.sourceTimestamp) {
+                toggleRow('row-sourceTimestamp', true);
+                setText('attr-sourceTimestamp', info.sourceTimestamp);
+            } else {
+                toggleRow('row-sourceTimestamp', false);
+                setText('attr-sourceTimestamp', '');
+            }
+
+            if (info.serverTimestamp) {
+                toggleRow('row-serverTimestamp', true);
+                setText('attr-serverTimestamp', info.serverTimestamp);
+            } else {
+                toggleRow('row-serverTimestamp', false);
+                setText('attr-serverTimestamp', '');
+            }
+
+            if (info.dataType) {
+                toggleRow('row-dataType', true);
+                const formatted = info.formattedDataType || info.dataType;
+                let html = '<strong>' + escapeHtml(formatted) + '</strong>';
+                if (info.formattedDataType && info.dataType && info.formattedDataType !== info.dataType) {
+                    html += '<br><span class="meta-text">NodeId: ' + escapeHtml(info.dataType) + '</span>';
+                }
+                setHtml('attr-dataType', html);
+            } else {
+                toggleRow('row-dataType', false);
+                setHtml('attr-dataType', '');
+            }
+
+            if (info.accessLevel !== undefined) {
+                toggleRow('row-accessLevel', true);
+                setText('attr-accessLevel', String(info.accessLevel));
+            } else {
+                toggleRow('row-accessLevel', false);
+                setText('attr-accessLevel', '');
+            }
+
+            if (info.userAccessLevel !== undefined) {
+                toggleRow('row-userAccessLevel', true);
+                setText('attr-userAccessLevel', String(info.userAccessLevel));
+            } else {
+                toggleRow('row-userAccessLevel', false);
+                setText('attr-userAccessLevel', '');
+            }
+        }
+
+        function renderReferences(refs) {
+            const container = document.getElementById('references-container');
+            const countEl = document.getElementById('references-count');
+            const entries = Array.isArray(refs) ? refs : [];
+
+            if (countEl) {
+                countEl.textContent = '(' + entries.length + ')';
+            }
+
+            if (!container) {
+                return;
+            }
+
+            if (!entries.length) {
+                container.innerHTML = '<p class="empty-message">No references found.</p>';
+                return;
+            }
+
+            const rows = entries
+                .map((ref) => [
+                    '<tr>',
+                    '<td class="value-cell">' + escapeHtml(ref.referenceTypeId || '') + '</td>',
+                    '<td>' + (ref.isForward ? 'Forward' : 'Inverse') + '</td>',
+                    '<td class="value-cell">' + escapeHtml(ref.nodeId || '') + '</td>',
+                    '<td class="value-cell">' + escapeHtml(ref.browseName || '') + '</td>',
+                    '<td class="value-cell">' + escapeHtml(ref.displayName || '') + '</td>',
+                    '<td><span class="node-class-badge">' + escapeHtml(ref.nodeClass || '') + '</span></td>',
+                    '</tr>'
+                ].join(''))
+                .join('');
+
+            container.innerHTML =
+                '<table>' +
+                '<tr>' +
+                '<th>Reference Type</th>' +
+                '<th>Direction</th>' +
+                '<th>Node ID</th>' +
+                '<th>Browse Name</th>' +
+                '<th>Display Name</th>' +
+                '<th>Node Class</th>' +
+                '</tr>' +
+                rows +
+                '</table>';
+        }
+
+        renderNodeDetails(initialNodeInfo);
+        renderReferences(initialReferences);
+        showStatusMessage('');
+        vscode.postMessage({ command: 'requestNodeData' });
+
+        refreshTimer = setInterval(() => {
+            vscode.postMessage({ command: 'requestNodeData' });
+        }, REFRESH_INTERVAL);
+
+        window.addEventListener('message', (event) => {
+            const message = event.data;
+            if (!message) {
+                return;
+            }
+
+            switch (message.command) {
+                case 'nodeData':
+                    renderNodeDetails(message.data);
+                    showStatusMessage('');
+                    break;
+                case 'nodeDataError':
+                    showStatusMessage(message.message || 'Failed to refresh node data');
+                    break;
+            }
+        });
+
+        window.addEventListener('unload', () => {
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+            }
+        });
     </script>
 </body>
 </html>`;
+    }
+
+    private serializeForWebview(data: unknown): string {
+        return JSON.stringify(
+            data,
+            (_key, value) => (typeof value === 'bigint' ? value.toString() : value)
+        )
+            .replace(/</g, '\\u003c')
+            .replace(/\u2028/g, '\\u2028')
+            .replace(/\u2029/g, '\\u2029');
     }
 
     private getErrorHtml(message: string): string {
@@ -308,18 +602,6 @@ export class NodeDetailPanel {
     </div>
 </body>
 </html>`;
-    }
-
-    private formatValue(value: any): string {
-        if (value === null || value === undefined) {
-            return '<em>null</em>';
-        }
-
-        if (typeof value === 'object') {
-            return `<pre>${this.escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
-        }
-
-        return this.escapeHtml(String(value));
     }
 
     private escapeHtml(text: string): string {

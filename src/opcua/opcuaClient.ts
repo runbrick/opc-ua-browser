@@ -151,7 +151,14 @@ export class OpcuaClient {
                 value: dataValues[4].value?.value,
                 dataType: dataValues[5].value?.value?.toString(),
                 accessLevel: dataValues[6].value?.value,
-                userAccessLevel: dataValues[7].value?.value
+                userAccessLevel: dataValues[7].value?.value,
+                statusCode: dataValues[4].statusCode?.toString(),
+                sourceTimestamp: dataValues[4].sourceTimestamp
+                    ? dataValues[4].sourceTimestamp.toISOString()
+                    : undefined,
+                serverTimestamp: dataValues[4].serverTimestamp
+                    ? dataValues[4].serverTimestamp.toISOString()
+                    : undefined
             };
 
             return nodeInfo;

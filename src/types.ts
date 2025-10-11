@@ -21,6 +21,9 @@ export interface OpcuaNodeInfo {
     accessLevel?: number;
     userAccessLevel?: number;
     description?: string;
+    statusCode?: string;
+    sourceTimestamp?: string;
+    serverTimestamp?: string;
 }
 
 export interface OpcuaReference {
