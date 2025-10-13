@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from './opcua/connectionManager';
-import { OpcuaTreeDataProvider, OpcuaNode } from './providers/opcuaTreeDataProvider';
+import { OpcuaTreeDataProvider, OpcuaNode, ConnectionNode } from './providers/opcuaTreeDataProvider';
 import { NodeDetailPanel } from './webview/NodeDetailPanel';
 import {
     addConnectionCommand,
@@ -11,7 +11,7 @@ import {
     refreshConnectionsCommand
 } from './commands/connectionCommands';
 import { exportNodeCommand, exportNodeToExcelCommand } from './commands/exportCommands';
-import { searchNodeCommand } from './commands/searchCommands';
+import { searchNodeCommand, searchNodeInConnectionCommand } from './commands/searchCommands';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('OPC UA Browser extension is now active!');
@@ -117,6 +117,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    const searchNodesForConnectionCmd = vscode.commands.registerCommand(
+        'opcua.searchNodesForConnection',
+        async (node: ConnectionNode) => {
+            await searchNodeInConnectionCommand(connectionManager, treeDataProvider, treeView, node);
+        }
+    );
+
     // 将所有命令和资源添加到订阅中
     context.subscriptions.push(
         treeView,
@@ -129,7 +136,8 @@ export function activate(context: vscode.ExtensionContext) {
         showNodeDetailsCmd,
         exportNodeCmd,
         exportNodeToExcelCmd,
-        searchNodesCmd
+        searchNodesCmd,
+        searchNodesForConnectionCmd
     );
 
     // 欢迎消息

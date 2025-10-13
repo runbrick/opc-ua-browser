@@ -81,6 +81,11 @@
         "command": "opcua.searchNodes",
         "title": "Search Nodes",
         "icon": "$(search)"
+      },
+      {
+        "command": "opcua.searchNodesForConnection",
+        "title": "Search Nodes in Connection",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -102,6 +107,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "opcua.searchNodesForConnection",
+          "when": "view == opcuaConnections && viewItem =~ /opcua-server/",
+          "group": "inline@0"
+        },
         {
           "command": "opcua.connect",
           "when": "view == opcuaConnections && viewItem == opcua-server-disconnected",
