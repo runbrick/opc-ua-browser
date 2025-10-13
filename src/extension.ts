@@ -77,15 +77,21 @@ export function activate(context: vscode.ExtensionContext) {
     // 注册命令：显示节点详情
     const showNodeDetailsCmd = vscode.commands.registerCommand(
         'opcua.showNodeDetails',
-        async (node: OpcuaNode) => {
-            if (node instanceof OpcuaNode) {
-                await NodeDetailPanel.show(
-                    context.extensionUri,
-                    connectionManager,
-                    node.connectionId,
-                    node.nodeId
-                );
+        async (node: OpcuaNode | { connectionId?: string; nodeId?: string }) => {
+            const connectionId = node instanceof OpcuaNode ? node.connectionId : node?.connectionId;
+            const nodeId = node instanceof OpcuaNode ? node.nodeId : node?.nodeId;
+
+            if (!connectionId || !nodeId) {
+                vscode.window.showWarningMessage('Unable to show node details: missing node information.');
+                return;
             }
+
+            await NodeDetailPanel.show(
+                context.extensionUri,
+                connectionManager,
+                connectionId,
+                nodeId
+            );
         }
     );
 
