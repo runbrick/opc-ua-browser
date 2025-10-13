@@ -2,7 +2,7 @@
   "name": "opcua-browser",
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -52,6 +52,11 @@
         "command": "opcua.disconnect",
         "title": "Disconnect",
         "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "opcua.toggleNonHierarchicalReferences",
+        "title": "Toggle Non-Hierarchical References",
+        "icon": "$(filter)"
       },
       {
         "command": "opcua.deleteConnection",
@@ -121,6 +126,11 @@
           "command": "opcua.disconnect",
           "when": "view == opcuaConnections && viewItem == opcua-server-connected",
           "group": "inline@1"
+        },
+        {
+          "command": "opcua.toggleNonHierarchicalReferences",
+          "when": "view == opcuaConnections && viewItem =~ /opcua-server/",
+          "group": "inline@2"
         },
         {
           "command": "opcua.editConnection",

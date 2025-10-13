@@ -10,6 +10,9 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     // 缓存节点的父子关系，用于 getParent
     private nodeParentMap: Map<string, TreeNode> = new Map();
 
+    // Tracks whether each connection shows non-hierarchical references
+    private showNonHierarchicalReferences: Map<string, boolean> = new Map();
+
     
     constructor(private connectionManager: ConnectionManager) {}
 
@@ -67,7 +70,8 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         for (const [id, client] of connections.entries()) {
             const config = this.connectionManager.getConnectionConfig(id);
             if (config) {
-                nodes.push(new ConnectionNode(config, client.status));
+                const includeNonHierarchical = this.isShowingNonHierarchical(id);
+                nodes.push(new ConnectionNode(config, client.status, includeNonHierarchical));
             }
         }
 
@@ -90,7 +94,9 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
             }
 
             console.log('Browsing RootFolder...');
-            const references = await client.browse('RootFolder');
+            const references = await client.browseWithOptions('RootFolder', {
+                includeNonHierarchical: this.isShowingNonHierarchical(connectionId)
+            });
             console.log(`Found ${references.length} root nodes`);
 
             // 找到连接节点作为父节点
@@ -128,7 +134,9 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 return [];
             }
 
-            const references = await client.browse(nodeId);
+            const references = await client.browseWithOptions(nodeId, {
+                includeNonHierarchical: this.isShowingNonHierarchical(connectionId)
+            });
             const nodes = references.map(ref => new OpcuaNode(
                 connectionId,
                 ref.nodeId.toString(),
@@ -157,6 +165,18 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         return ref.nodeClass === NodeClass.Object;
     }
 
+    isShowingNonHierarchical(connectionId: string): boolean {
+        return this.showNonHierarchicalReferences.get(connectionId) ?? true;
+    }
+
+    toggleNonHierarchicalReferences(connectionId: string): boolean {
+        const nextValue = !this.isShowingNonHierarchical(connectionId);
+        this.showNonHierarchicalReferences.set(connectionId, nextValue);
+        this.nodeParentMap.clear();
+        this.refresh();
+        return nextValue;
+    }
+
 }
 
 export abstract class TreeNode extends vscode.TreeItem {
@@ -171,7 +191,8 @@ export abstract class TreeNode extends vscode.TreeItem {
 export class ConnectionNode extends TreeNode {
     constructor(
         public readonly config: OpcuaConnectionConfig,
-        public readonly status: ConnectionStatus
+        public readonly status: ConnectionStatus,
+        public readonly includeNonHierarchical: boolean
     ) {
         super(
             config.name || config.endpointUrl,
@@ -181,7 +202,14 @@ export class ConnectionNode extends TreeNode {
         );
 
         this.tooltip = config.endpointUrl;
-        this.description = this.getStatusText(status);
+        const statusText = this.getStatusText(status);
+        if (status === ConnectionStatus.Connected) {
+            this.description = includeNonHierarchical
+                ? `${statusText} - All refs`
+                : `${statusText} - Hierarchical only`;
+        } else {
+            this.description = statusText;
+        }
         this.iconPath = this.getStatusIcon(status);
         this.contextValue = status === ConnectionStatus.Connected
             ? 'opcua-server-connected'

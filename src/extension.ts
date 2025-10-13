@@ -60,6 +60,26 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    const toggleNonHierarchicalCmd = vscode.commands.registerCommand(
+        'opcua.toggleNonHierarchicalReferences',
+        (node?: ConnectionNode) => {
+            if (!node) {
+                vscode.window.showWarningMessage('Select a connection in the tree to toggle references.');
+                return;
+            }
+
+            const connectionNode = node as ConnectionNode;
+            const includeNonHierarchical = treeDataProvider.toggleNonHierarchicalReferences(connectionNode.connectionId);
+            const displayName = connectionNode.label || connectionNode.config.name || connectionNode.config.endpointUrl;
+
+            const message = includeNonHierarchical
+                ? `Showing all references for "${displayName}".`
+                : `Showing only hierarchical references for "${displayName}".`;
+
+            vscode.window.showInformationMessage(message);
+        }
+    );
+
     // 注册命令：删除连接
     const deleteConnectionCmd = vscode.commands.registerCommand(
         'opcua.deleteConnection',
@@ -143,7 +163,8 @@ export function activate(context: vscode.ExtensionContext) {
         exportNodeCmd,
         exportNodeToExcelCmd,
         searchNodesCmd,
-        searchNodesForConnectionCmd
+        searchNodesForConnectionCmd,
+        toggleNonHierarchicalCmd
     );
 
     // 欢迎消息

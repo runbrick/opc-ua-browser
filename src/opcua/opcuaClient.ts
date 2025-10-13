@@ -13,10 +13,13 @@ import {
     coerceNodeId,
     ReadValueIdOptions,
     BrowseDescriptionOptions,
-    BrowseResult
+    BrowseResult,
+    ReferenceTypeIds
 } from 'node-opcua';
 import { OpcuaConnectionConfig, OpcuaNodeInfo, OpcuaReference, ConnectionStatus } from '../types';
 import { normalizeNodeIdInput } from '../utils/nodeIdUtils';
+
+const HIERARCHICAL_REFERENCES_NODE_ID = coerceNodeId(ReferenceTypeIds.HierarchicalReferences);
 
 export class OpcuaClient {
     private client: OPCUAClient | null = null;
@@ -105,6 +108,21 @@ export class OpcuaClient {
     }
 
     async browse(nodeId: string = 'RootFolder'): Promise<ReferenceDescription[]> {
+        return this.browseInternal(nodeId, true);
+    }
+
+    async browseWithOptions(
+        nodeId: string = 'RootFolder',
+        options?: { includeNonHierarchical?: boolean }
+    ): Promise<ReferenceDescription[]> {
+        const includeNonHierarchical = options?.includeNonHierarchical ?? true;
+        return this.browseInternal(nodeId, includeNonHierarchical);
+    }
+
+    private async browseInternal(
+        nodeId: string = 'RootFolder',
+        includeNonHierarchical: boolean
+    ): Promise<ReferenceDescription[]> {
         if (!this.session) {
             throw new Error('Not connected to OPC UA server');
         }
@@ -118,7 +136,7 @@ export class OpcuaClient {
 
             const browseDescription: BrowseDescriptionOptions = {
                 nodeId: coerceNodeId(actualNodeId),
-                referenceTypeId: undefined,
+                referenceTypeId: includeNonHierarchical ? undefined : HIERARCHICAL_REFERENCES_NODE_ID,
                 browseDirection: BrowseDirection.Forward,
                 includeSubtypes: true,
                 nodeClassMask: 0,
@@ -153,6 +171,11 @@ export class OpcuaClient {
                 } catch (releaseError) {
                     console.warn('Failed to release continuation point:', releaseError);
                 }
+            }
+
+            if (!includeNonHierarchical && references.length === 0) {
+                console.warn(`No hierarchical references returned for ${nodeId}; falling back to full reference list.`);
+                return this.browseInternal(nodeId, true);
             }
 
             console.log(`Browsed node ${nodeId}, found ${references.length} references (including continuation points)`);
