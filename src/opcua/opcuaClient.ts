@@ -26,6 +26,17 @@ export class OpcuaClient {
         this.config = config;
     }
 
+    getConfig(): OpcuaConnectionConfig {
+        return this.config;
+    }
+
+    updateConfig(config: OpcuaConnectionConfig): void {
+        this.config = config;
+        this._status = ConnectionStatus.Disconnected;
+        this.session = null;
+        this.client = null;
+    }
+
     get status(): ConnectionStatus {
         return this._status;
     }

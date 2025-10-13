@@ -234,6 +234,198 @@ export async function deleteConnectionCommand(
     }
 }
 
+export async function editConnectionCommand(
+    connectionManager: ConnectionManager,
+    treeDataProvider: any,
+    node: any
+): Promise<void> {
+    if (!node?.connectionId) {
+        vscode.window.showErrorMessage('Unable to edit connection: invalid selection.');
+        return;
+    }
+
+    const existingConfig = connectionManager.getConnectionConfig(node.connectionId);
+    if (!existingConfig) {
+        vscode.window.showErrorMessage('Unable to edit connection: configuration not found.');
+        return;
+    }
+
+    const endpointUrl = await vscode.window.showInputBox({
+        prompt: 'Update OPC UA Server Endpoint URL',
+        placeHolder: 'opc.tcp://localhost:4840',
+        value: existingConfig.endpointUrl,
+        validateInput: (value) => {
+            if (!value || !value.startsWith('opc.tcp://')) {
+                return 'Please enter a valid OPC UA endpoint URL (e.g., opc.tcp://localhost:4840)';
+            }
+            return null;
+        }
+    });
+
+    if (!endpointUrl) {
+        return;
+    }
+
+    const connectionName = await vscode.window.showInputBox({
+        prompt: 'Update the connection name',
+        placeHolder: 'My OPC UA Server',
+        value: existingConfig.name
+    });
+
+    if (!connectionName) {
+        return;
+    }
+
+    let cancelled = false;
+    let updatedConfig: OpcuaConnectionConfig | null = null;
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: `Updating connection "${existingConfig.name}"...`,
+            cancellable: false
+        },
+        async () => {
+            const endpoints = await getEndpoints(endpointUrl);
+
+            let selectedSecurityMode = existingConfig.securityMode;
+            let selectedSecurityPolicy = existingConfig.securityPolicy;
+
+            if (endpoints.length > 0) {
+                const endpointItems = endpoints.map(ep => ({
+                    label: `${ep.securityMode} - ${ep.securityPolicy}`,
+                    description: ep.endpointUrl,
+                    endpoint: ep
+                }));
+
+                if (!endpointItems.some(item =>
+                    item.endpoint.securityMode === existingConfig.securityMode &&
+                    item.endpoint.securityPolicy === existingConfig.securityPolicy
+                )) {
+                    endpointItems.unshift({
+                        label: `Current: ${existingConfig.securityMode} - ${existingConfig.securityPolicy}`,
+                        description: existingConfig.endpointUrl,
+                        endpoint: {
+                            endpointUrl: existingConfig.endpointUrl,
+                            securityMode: existingConfig.securityMode,
+                            securityPolicy: existingConfig.securityPolicy
+                        }
+                    });
+                }
+
+                const selectedEndpoint = await vscode.window.showQuickPick(endpointItems, {
+                    placeHolder: 'Select security mode and policy'
+                });
+
+                if (!selectedEndpoint) {
+                    cancelled = true;
+                    return;
+                }
+
+                selectedSecurityMode = selectedEndpoint.endpoint.securityMode;
+                selectedSecurityPolicy = selectedEndpoint.endpoint.securityPolicy;
+            } else {
+                vscode.window.showWarningMessage('No endpoints found. Keeping existing security settings.');
+            }
+
+            const authOptions = [
+                { label: 'Anonymous', value: 'Anonymous' as const },
+                { label: 'Username/Password', value: 'UserPassword' as const }
+            ];
+
+            const orderedAuthOptions = existingConfig.authType === 'UserPassword'
+                ? [authOptions[1], authOptions[0]]
+                : [authOptions[0], authOptions[1]];
+
+            const authType = await vscode.window.showQuickPick(orderedAuthOptions, {
+                placeHolder: 'Select authentication method'
+            });
+
+            if (!authType) {
+                cancelled = true;
+                return;
+            }
+
+            let username: string | undefined = authType.value === 'UserPassword' ? existingConfig.username : undefined;
+            let password: string | undefined = authType.value === 'UserPassword' ? existingConfig.password : undefined;
+
+            if (authType.value === 'UserPassword') {
+                const usernameInput = await vscode.window.showInputBox({
+                    prompt: 'Enter username',
+                    placeHolder: 'username',
+                    value: existingConfig.username
+                });
+
+                if (!usernameInput) {
+                    cancelled = true;
+                    return;
+                }
+
+                username = usernameInput;
+
+                const passwordOptions = [
+                    ...(existingConfig.password ? [{ label: 'Keep existing password', value: 'keep' as const }] : []),
+                    { label: 'Enter new password', value: 'new' as const },
+                    { label: 'Clear password', value: 'clear' as const }
+                ];
+
+                const passwordAction = await vscode.window.showQuickPick(passwordOptions, {
+                    placeHolder: 'Select how to handle the password'
+                });
+
+                if (!passwordAction) {
+                    cancelled = true;
+                    return;
+                }
+
+                if (passwordAction.value === 'new') {
+                    const newPassword = await vscode.window.showInputBox({
+                        prompt: 'Enter new password',
+                        placeHolder: 'password',
+                        password: true
+                    });
+
+                    if (newPassword === undefined) {
+                        cancelled = true;
+                        return;
+                    }
+
+                    password = newPassword;
+                } else if (passwordAction.value === 'clear') {
+                    password = undefined;
+                }
+            } else {
+                username = undefined;
+                password = undefined;
+            }
+
+            updatedConfig = {
+                ...existingConfig,
+                id: existingConfig.id,
+                name: connectionName,
+                endpointUrl,
+                securityMode: selectedSecurityMode,
+                securityPolicy: selectedSecurityPolicy,
+                authType: authType.value,
+                username,
+                password
+            };
+        }
+    );
+
+    if (cancelled || !updatedConfig) {
+        return;
+    }
+
+    try {
+        await connectionManager.updateConnection(node.connectionId, updatedConfig);
+        treeDataProvider.refresh();
+        vscode.window.showInformationMessage(`Connection "${connectionName}" updated successfully.`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Failed to update connection: ${error}`);
+    }
+}
+
 export function refreshConnectionsCommand(treeDataProvider: any): void {
     treeDataProvider.refresh();
     vscode.window.showInformationMessage('Connections refreshed.');

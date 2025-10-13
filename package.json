@@ -59,6 +59,11 @@
         "icon": "$(trash)"
       },
       {
+        "command": "opcua.editConnection",
+        "title": "Edit Connection",
+        "icon": "$(edit)"
+      },
+      {
         "command": "opcua.showNodeDetails",
         "title": "Show Node Details"
       },
@@ -106,6 +111,11 @@
           "command": "opcua.disconnect",
           "when": "view == opcuaConnections && viewItem == opcua-server-connected",
           "group": "inline@1"
+        },
+        {
+          "command": "opcua.editConnection",
+          "when": "view == opcuaConnections && viewItem =~ /opcua-server/",
+          "group": "management@0"
         },
         {
           "command": "opcua.deleteConnection",

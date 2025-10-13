@@ -7,6 +7,7 @@ import {
     connectCommand,
     disconnectCommand,
     deleteConnectionCommand,
+    editConnectionCommand,
     refreshConnectionsCommand
 } from './commands/connectionCommands';
 import { exportNodeCommand, exportNodeToExcelCommand } from './commands/exportCommands';
@@ -66,6 +67,12 @@ export function activate(context: vscode.ExtensionContext) {
             await deleteConnectionCommand(connectionManager, treeDataProvider, node);
         }
     );
+    const editConnectionCmd = vscode.commands.registerCommand(
+        'opcua.editConnection',
+        async (node) => {
+            await editConnectionCommand(connectionManager, treeDataProvider, node);
+        }
+    );
 
     // 注册命令：显示节点详情
     const showNodeDetailsCmd = vscode.commands.registerCommand(
@@ -118,6 +125,7 @@ export function activate(context: vscode.ExtensionContext) {
         connectCmd,
         disconnectCmd,
         deleteConnectionCmd,
+        editConnectionCmd,
         showNodeDetailsCmd,
         exportNodeCmd,
         exportNodeToExcelCmd,

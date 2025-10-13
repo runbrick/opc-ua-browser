@@ -29,8 +29,8 @@ export class ConnectionManager {
         const configs: OpcuaConnectionConfig[] = [];
 
         for (const [id, client] of this.connections.entries()) {
-            const config = (client as any).config as OpcuaConnectionConfig;
-            configs.push(config);
+            const config = client.getConfig();
+            configs.push({ ...config, id });
         }
 
         await this.context.globalState.update(ConnectionManager.STORAGE_KEY, configs);
@@ -46,6 +46,20 @@ export class ConnectionManager {
         await this.saveConnections();
 
         return config.id;
+    }
+
+    async updateConnection(connectionId: string, updatedConfig: OpcuaConnectionConfig): Promise<void> {
+        const client = this.connections.get(connectionId);
+        if (!client) {
+            throw new Error(`Connection ${connectionId} not found`);
+        }
+
+        if (client.isConnected) {
+            await client.disconnect();
+        }
+
+        client.updateConfig({ ...updatedConfig, id: connectionId });
+        await this.saveConnections();
     }
 
     async removeConnection(connectionId: string): Promise<void> {
@@ -92,7 +106,7 @@ export class ConnectionManager {
     getConnectionConfig(connectionId: string): OpcuaConnectionConfig | undefined {
         const client = this.connections.get(connectionId);
         if (client) {
-            return (client as any).config as OpcuaConnectionConfig;
+            return client.getConfig();
         }
         return undefined;
     }
