@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaClient } from '../opcua/opcuaClient';
 import { OpcuaTreeDataProvider, OpcuaNode, ConnectionNode, TreeNode } from '../providers/opcuaTreeDataProvider';
+import { isNodeIdPattern, normalizeNodeIdInput } from '../utils/nodeIdUtils';
 
 interface NodeSearchResult {
     nodeId: string;
@@ -128,8 +129,8 @@ export async function searchNodeInConnectionCommand(
 
 async function promptSearchTerm(): Promise<string | undefined> {
     const searchTerm = await vscode.window.showInputBox({
-        prompt: 'Enter search term (node name)',
-        placeHolder: 'e.g., Temperature, Pressure, Motor',
+        prompt: 'Enter search term (node name or NodeId)',
+        placeHolder: 'e.g., Temperature, Pressure, ns=2;s=MyTag',
         validateInput: (value) => {
             if (!value || value.trim().length === 0) {
                 return 'Search term cannot be empty';
@@ -155,6 +156,20 @@ async function executeSearch(
     if (connectionsToSearch.length === 0) {
         vscode.window.showWarningMessage('No connected OPC UA servers available for search');
         return;
+    }
+
+    const trimmedSearchTerm = searchTerm.trim();
+    if (isNodeIdPattern(trimmedSearchTerm)) {
+        const handled = await handleDirectNodeIdSearch(
+            trimmedSearchTerm,
+            connectionsToSearch,
+            connectionManager,
+            treeDataProvider,
+            treeView
+        );
+        if (handled) {
+            return;
+        }
     }
 
     await vscode.window.withProgress(
@@ -238,22 +253,13 @@ async function executeSearch(
                 if (selected && selected.result) {
                     const result = selected.result as SearchResult;
 
-                    try {
-                        await revealNodeInTree(
-                            treeView,
-                            treeDataProvider,
-                            connectionManager,
-                            result.connectionId,
-                            result.nodeIdPath,
-                            result.displayName,
-                            result.nodeClass
-                        );
-                    } catch (error) {
-                        console.error('Error revealing node in tree:', error);
-                        vscode.window.showErrorMessage(
-                            `Error revealing node: ${error instanceof Error ? error.message : 'Unknown error'}`
-                        );
-                    }
+                    await openSearchResult(
+                        result,
+                        treeView,
+                        treeDataProvider,
+                        connectionManager,
+                        true
+                    );
 
                     quickPick.hide();
                 }
@@ -263,6 +269,167 @@ async function executeSearch(
             quickPick.show();
         }
     );
+}
+
+async function handleDirectNodeIdSearch(
+    nodeIdInput: string,
+    connectionsToSearch: Array<[string, OpcuaClient]>,
+    connectionManager: ConnectionManager,
+    treeDataProvider: OpcuaTreeDataProvider,
+    treeView: vscode.TreeView<any>
+): Promise<boolean> {
+    if (connectionsToSearch.length === 0) {
+        return true;
+    }
+
+    const normalizedNodeId = normalizeNodeIdInput(nodeIdInput);
+    const results: SearchResult[] = [];
+    let wasCancelled = false;
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: `Locating node ${normalizedNodeId}`,
+            cancellable: true
+        },
+        async (progress, token) => {
+            for (const [connectionId, client] of connectionsToSearch) {
+                if (token.isCancellationRequested) {
+                    wasCancelled = true;
+                    break;
+                }
+
+                const config = connectionManager.getConnectionConfig(connectionId);
+                const connectionName = config?.name || config?.endpointUrl || connectionId;
+
+                progress.report({
+                    message: `Checking ${connectionName}...`
+                });
+
+                try {
+                    const located = await client.findNodePathByNodeId(normalizedNodeId, {
+                        maxDepth: 25,
+                        cancellationToken: token
+                    });
+
+                    if (located) {
+                        results.push({
+                            nodeId: normalizedNodeId,
+                            displayName: located.displayName || normalizedNodeId,
+                            browseName: located.browseName || '',
+                            nodeClass: located.nodeClass,
+                            path: located.path,
+                            nodeIdPath: located.nodeIdPath,
+                            connectionId,
+                            connectionName
+                        });
+                        continue;
+                    }
+
+                    const nodeInfo = await client.readNodeAttributes(normalizedNodeId);
+                    const displayName = nodeInfo.displayName || nodeInfo.browseName || normalizedNodeId;
+
+                    results.push({
+                        nodeId: normalizedNodeId,
+                        displayName,
+                        browseName: nodeInfo.browseName || '',
+                        nodeClass: nodeInfo.nodeClass,
+                        path: displayName,
+                        nodeIdPath: [],
+                        connectionId,
+                        connectionName
+                    });
+                } catch (error) {
+                    console.warn(`Node ${normalizedNodeId} not found in ${connectionName}:`, error);
+                }
+            }
+        }
+    );
+
+    if (wasCancelled) {
+        vscode.window.showInformationMessage('Node search cancelled');
+        return true;
+    }
+
+    if (results.length === 0) {
+        vscode.window.showInformationMessage(`Node ${normalizedNodeId} was not found in the selected servers.`);
+        return true;
+    }
+
+    if (results.length === 1) {
+        await openSearchResult(
+            results[0],
+            treeView,
+            treeDataProvider,
+            connectionManager,
+            false
+        );
+        return true;
+    }
+
+    const selection = await vscode.window.showQuickPick(
+        results.map(result => ({
+            label: result.connectionName,
+            description: result.path,
+            detail: result.displayName,
+            result
+        })),
+        {
+            placeHolder: `Select server containing ${normalizedNodeId}`
+        }
+    );
+
+    if (selection && selection.result) {
+        await openSearchResult(
+            selection.result,
+            treeView,
+            treeDataProvider,
+            connectionManager,
+            false
+        );
+    }
+
+    return true;
+}
+
+async function openSearchResult(
+    result: SearchResult,
+    treeView: vscode.TreeView<any>,
+    treeDataProvider: OpcuaTreeDataProvider,
+    connectionManager: ConnectionManager,
+    allowErrorMessage: boolean
+): Promise<void> {
+    try {
+        if (result.nodeIdPath.length > 0) {
+            await revealNodeInTree(
+                treeView,
+                treeDataProvider,
+                connectionManager,
+                result.connectionId,
+                result.nodeIdPath,
+                result.displayName,
+                result.nodeClass
+            );
+            return;
+        }
+    } catch (error) {
+        console.error('Error revealing node in tree:', error);
+        if (allowErrorMessage) {
+            vscode.window.showErrorMessage(
+                `Error revealing node: ${error instanceof Error ? error.message : 'Unknown error'}`
+            );
+        }
+    }
+
+    const fallbackNode = new OpcuaNode(
+        result.connectionId,
+        result.nodeId,
+        result.displayName || result.browseName || result.nodeId,
+        getNodeClassNumber(result.nodeClass),
+        result.nodeClass === 'Object'
+    );
+
+    await vscode.commands.executeCommand('opcua.showNodeDetails', fallbackNode);
 }
 
 function getNodeClassNumber(nodeClassName: string): number {

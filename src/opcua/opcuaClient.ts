@@ -16,6 +16,7 @@ import {
     BrowseResult
 } from 'node-opcua';
 import { OpcuaConnectionConfig, OpcuaNodeInfo, OpcuaReference, ConnectionStatus } from '../types';
+import { normalizeNodeIdInput } from '../utils/nodeIdUtils';
 
 export class OpcuaClient {
     private client: OPCUAClient | null = null;
@@ -303,6 +304,106 @@ export class OpcuaClient {
             default:
                 return SecurityPolicy.None;
         }
+    }
+
+    async findNodePathByNodeId(
+        targetNodeId: string,
+        options?: {
+            maxDepth?: number;
+            cancellationToken?: { isCancellationRequested: boolean };
+        }
+    ): Promise<{
+        nodeId: string;
+        displayName: string;
+        browseName: string;
+        nodeClass: string;
+        path: string;
+        nodeIdPath: string[];
+    } | undefined> {
+        if (!this.session) {
+            throw new Error('Not connected to OPC UA server');
+        }
+
+        const normalizedTarget = normalizeNodeIdInput(targetNodeId);
+        const maxDepth = options?.maxDepth ?? 20;
+
+        interface QueueItem {
+            nodeId: string;
+            path: string;
+            nodeIdPath: string[];
+            depth: number;
+        }
+
+        const visited = new Set<string>();
+        const queue: QueueItem[] = [
+            { nodeId: 'RootFolder', path: '', nodeIdPath: [], depth: 0 }
+        ];
+
+        visited.add('RootFolder');
+
+        while (queue.length > 0) {
+            if (options?.cancellationToken?.isCancellationRequested) {
+                return undefined;
+            }
+
+            const current = queue.shift();
+            if (!current) {
+                break;
+            }
+
+            if (current.depth > maxDepth) {
+                continue;
+            }
+
+            let references: ReferenceDescription[];
+
+            try {
+                references = await this.browse(current.nodeId);
+            } catch (error) {
+                console.error(`Error browsing node ${current.nodeId} during path lookup:`, error);
+                continue;
+            }
+
+            for (const ref of references) {
+                if (options?.cancellationToken?.isCancellationRequested) {
+                    return undefined;
+                }
+
+                const childNodeId = ref.nodeId.toString();
+                const normalizedChildNodeId = normalizeNodeIdInput(childNodeId);
+
+                const displayName = ref.displayName.text || ref.browseName.name || childNodeId;
+                const browseName = ref.browseName.name || '';
+                const path = current.path ? `${current.path} > ${displayName}` : displayName;
+                const nodeIdPath = [...current.nodeIdPath, childNodeId];
+
+                if (normalizedChildNodeId === normalizedTarget) {
+                    return {
+                        nodeId: childNodeId,
+                        displayName,
+                        browseName,
+                        nodeClass: NodeClass[ref.nodeClass] || 'Unknown',
+                        path,
+                        nodeIdPath
+                    };
+                }
+
+                if (current.depth < maxDepth) {
+                    const canHaveChildren = ref.nodeClass === NodeClass.Object || ref.nodeClass === NodeClass.View;
+                    if (canHaveChildren && !visited.has(childNodeId)) {
+                        visited.add(childNodeId);
+                        queue.push({
+                            nodeId: childNodeId,
+                            path,
+                            nodeIdPath,
+                            depth: current.depth + 1
+                        });
+                    }
+                }
+            }
+        }
+
+        return undefined;
     }
 
     async searchNodes(
