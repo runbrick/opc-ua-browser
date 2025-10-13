@@ -3,6 +3,7 @@ import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaClient } from '../opcua/opcuaClient';
 import { OpcuaTreeDataProvider, OpcuaNode, ConnectionNode, TreeNode } from '../providers/opcuaTreeDataProvider';
 import { isNodeIdPattern, normalizeNodeIdInput } from '../utils/nodeIdUtils';
+import { SearchResultItem, SearchResultsPanel } from '../webview/SearchResultsPanel';
 
 interface NodeSearchResult {
     nodeId: string;
@@ -13,15 +14,13 @@ interface NodeSearchResult {
     nodeIdPath: string[];
 }
 
-interface SearchResult extends NodeSearchResult {
-    connectionId: string;
-    connectionName: string;
-}
+type SearchResult = SearchResultItem;
 
 export async function searchNodeCommand(
     connectionManager: ConnectionManager,
     treeDataProvider: OpcuaTreeDataProvider,
-    treeView: vscode.TreeView<any>
+    treeView: vscode.TreeView<any>,
+    extensionUri: vscode.Uri
 ): Promise<void> {
     const connections = connectionManager.getAllConnections();
     if (connections.size === 0) {
@@ -88,7 +87,8 @@ export async function searchNodeCommand(
         connectionsToSearch,
         connectionManager,
         treeDataProvider,
-        treeView
+        treeView,
+        extensionUri
     );
 }
 
@@ -96,7 +96,8 @@ export async function searchNodeInConnectionCommand(
     connectionManager: ConnectionManager,
     treeDataProvider: OpcuaTreeDataProvider,
     treeView: vscode.TreeView<any>,
-    node: ConnectionNode
+    node: ConnectionNode,
+    extensionUri: vscode.Uri
 ): Promise<void> {
     if (!(node instanceof ConnectionNode)) {
         return;
@@ -123,7 +124,8 @@ export async function searchNodeInConnectionCommand(
         [[node.connectionId, client]],
         connectionManager,
         treeDataProvider,
-        treeView
+        treeView,
+        extensionUri
     );
 }
 
@@ -151,7 +153,8 @@ async function executeSearch(
     connectionsToSearch: Array<[string, OpcuaClient]>,
     connectionManager: ConnectionManager,
     treeDataProvider: OpcuaTreeDataProvider,
-    treeView: vscode.TreeView<any>
+    treeView: vscode.TreeView<any>,
+    extensionUri: vscode.Uri
 ): Promise<void> {
     if (connectionsToSearch.length === 0) {
         vscode.window.showWarningMessage('No connected OPC UA servers available for search');
@@ -165,7 +168,8 @@ async function executeSearch(
             connectionsToSearch,
             connectionManager,
             treeDataProvider,
-            treeView
+            treeView,
+            extensionUri
         );
         if (handled) {
             return;
@@ -238,21 +242,14 @@ async function executeSearch(
                 return;
             }
 
-            const quickPick = vscode.window.createQuickPick();
-            quickPick.title = `Search Results for "${searchTerm}"`;
-            quickPick.placeholder = `Found ${results.length} matching nodes (searched ${searchedNodes} nodes)`;
-            quickPick.items = results.map(result => ({
-                label: result.displayName,
-                description: result.nodeClass,
-                detail: `${result.connectionName} > ${result.path}`,
-                result: result
-            }));
-
-            quickPick.onDidAccept(async () => {
-                const selected = quickPick.selectedItems[0] as any;
-                if (selected && selected.result) {
-                    const result = selected.result as SearchResult;
-
+            SearchResultsPanel.show(
+                extensionUri,
+                {
+                    searchTerm,
+                    searchedNodes,
+                    results
+                },
+                async (result) => {
                     await openSearchResult(
                         result,
                         treeView,
@@ -260,13 +257,8 @@ async function executeSearch(
                         connectionManager,
                         true
                     );
-
-                    quickPick.hide();
                 }
-            });
-
-            quickPick.onDidHide(() => quickPick.dispose());
-            quickPick.show();
+            );
         }
     );
 }
@@ -276,7 +268,8 @@ async function handleDirectNodeIdSearch(
     connectionsToSearch: Array<[string, OpcuaClient]>,
     connectionManager: ConnectionManager,
     treeDataProvider: OpcuaTreeDataProvider,
-    treeView: vscode.TreeView<any>
+    treeView: vscode.TreeView<any>,
+    extensionUri: vscode.Uri
 ): Promise<boolean> {
     if (connectionsToSearch.length === 0) {
         return true;
@@ -367,27 +360,23 @@ async function handleDirectNodeIdSearch(
         return true;
     }
 
-    const selection = await vscode.window.showQuickPick(
-        results.map(result => ({
-            label: result.connectionName,
-            description: result.path,
-            detail: result.displayName,
-            result
-        })),
+    SearchResultsPanel.show(
+        extensionUri,
         {
-            placeHolder: `Select server containing ${normalizedNodeId}`
+            searchTerm: normalizedNodeId,
+            searchedNodes: connectionsToSearch.length,
+            results
+        },
+        async (result) => {
+            await openSearchResult(
+                result,
+                treeView,
+                treeDataProvider,
+                connectionManager,
+                false
+            );
         }
     );
-
-    if (selection && selection.result) {
-        await openSearchResult(
-            selection.result,
-            treeView,
-            treeDataProvider,
-            connectionManager,
-            false
-        );
-    }
 
     return true;
 }

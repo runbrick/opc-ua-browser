@@ -139,14 +139,20 @@ export function activate(context: vscode.ExtensionContext) {
     const searchNodesCmd = vscode.commands.registerCommand(
         'opcua.searchNodes',
         async () => {
-            await searchNodeCommand(connectionManager, treeDataProvider, treeView);
+            await searchNodeCommand(connectionManager, treeDataProvider, treeView, context.extensionUri);
         }
     );
 
     const searchNodesForConnectionCmd = vscode.commands.registerCommand(
         'opcua.searchNodesForConnection',
         async (node: ConnectionNode) => {
-            await searchNodeInConnectionCommand(connectionManager, treeDataProvider, treeView, node);
+            await searchNodeInConnectionCommand(
+                connectionManager,
+                treeDataProvider,
+                treeView,
+                node,
+                context.extensionUri
+            );
         }
     );
 
