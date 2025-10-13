@@ -10,9 +10,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     // 缓存节点的父子关系，用于 getParent
     private nodeParentMap: Map<string, TreeNode> = new Map();
 
-    // 缓存所有已加载的节点，用于快速搜索
-    private nodeCache: Map<string, OpcuaNode> = new Map();
-
+    
     constructor(private connectionManager: ConnectionManager) {}
 
     refresh(element?: TreeNode): void {
@@ -113,7 +111,6 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 nodes.forEach(node => {
                     const key = `${connectionId}:${(node as OpcuaNode).nodeId}`;
                     this.nodeParentMap.set(key, connectionNode);
-                    this.nodeCache.set(key, node as OpcuaNode);
                 });
             }
 
@@ -145,7 +142,6 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 nodes.forEach(node => {
                     const key = `${connectionId}:${(node as OpcuaNode).nodeId}`;
                     this.nodeParentMap.set(key, parentNode);
-                    this.nodeCache.set(key, node as OpcuaNode);
                 });
             }
 
@@ -161,122 +157,6 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         return ref.nodeClass === NodeClass.Object;
     }
 
-    // 搜索缓存中的节点
-    searchCachedNodes(searchTerm: string, connectionId?: string): Array<{
-        node: OpcuaNode;
-        path: string;
-        nodeIdPath: string[];
-    }> {
-        const results: Array<{
-            node: OpcuaNode;
-            path: string;
-            nodeIdPath: string[];
-        }> = [];
-
-        const searchTermLower = searchTerm.toLowerCase();
-
-        for (const [key, node] of this.nodeCache.entries()) {
-            // 如果指定了连接ID，只搜索该连接的节点
-            if (connectionId && node.connectionId !== connectionId) {
-                continue;
-            }
-
-            // 检查是否匹配搜索词
-            if (
-                node.displayName.toLowerCase().includes(searchTermLower) ||
-                node.nodeId.toLowerCase().includes(searchTermLower)
-            ) {
-                // 构建路径
-                const path = this.buildNodePath(node);
-                const nodeIdPath = this.buildNodeIdPath(node);
-
-                results.push({
-                    node,
-                    path,
-                    nodeIdPath
-                });
-            }
-        }
-
-        return results;
-    }
-
-    // 构建节点的显示路径
-    private buildNodePath(node: OpcuaNode): string {
-        const pathParts: string[] = [];
-        let currentNode: TreeNode | undefined = node;
-
-        while (currentNode) {
-            if (currentNode instanceof OpcuaNode) {
-                pathParts.unshift(currentNode.displayName);
-            } else if (currentNode instanceof ConnectionNode) {
-                pathParts.unshift(currentNode.config.name || currentNode.config.endpointUrl);
-            }
-
-            const key: string = currentNode instanceof OpcuaNode
-                ? `${currentNode.connectionId}:${currentNode.nodeId}`
-                : '';
-
-            currentNode = key ? this.nodeParentMap.get(key) : undefined;
-        }
-
-        return pathParts.join(' > ');
-    }
-
-    // 构建节点的 NodeId 路径
-    private buildNodeIdPath(node: OpcuaNode): string[] {
-        const pathParts: string[] = [];
-        let currentNode: TreeNode | undefined = node;
-
-        while (currentNode) {
-            if (currentNode instanceof OpcuaNode) {
-                pathParts.unshift(currentNode.nodeId);
-            }
-
-            const key: string = currentNode instanceof OpcuaNode
-                ? `${currentNode.connectionId}:${currentNode.nodeId}`
-                : '';
-
-            currentNode = key ? this.nodeParentMap.get(key) : undefined;
-        }
-
-        return pathParts;
-    }
-
-    // 获取缓存的节点数量
-    getCachedNodeCount(connectionId?: string): number {
-        if (!connectionId) {
-            return this.nodeCache.size;
-        }
-
-        let count = 0;
-        for (const node of this.nodeCache.values()) {
-            if (node.connectionId === connectionId) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    // 清除缓存
-    clearCache(connectionId?: string): void {
-        if (!connectionId) {
-            this.nodeCache.clear();
-            this.nodeParentMap.clear();
-        } else {
-            // 只清除特定连接的缓存
-            const keysToDelete: string[] = [];
-            for (const [key, node] of this.nodeCache.entries()) {
-                if (node.connectionId === connectionId) {
-                    keysToDelete.push(key);
-                }
-            }
-            keysToDelete.forEach(key => {
-                this.nodeCache.delete(key);
-                this.nodeParentMap.delete(key);
-            });
-        }
-    }
 }
 
 export abstract class TreeNode extends vscode.TreeItem {

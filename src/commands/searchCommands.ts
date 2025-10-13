@@ -54,36 +54,6 @@ export async function searchNodeCommand(
         return;
     }
 
-    // 选择搜索模式
-    const searchMode = await vscode.window.showQuickPick(
-        [
-            {
-                label: 'Search Cached Nodes (Fast)',
-                description: 'Only search nodes already loaded in tree view',
-                value: 'cached'
-            },
-            {
-                label: 'Search All Nodes (Slow)',
-                description: 'Search all nodes in the server',
-                value: 'full'
-            }
-        ],
-        { placeHolder: 'Select search mode' }
-    );
-
-    if (!searchMode) {
-        return;
-    }
-
-    // 如果是缓存搜索，检查缓存数量
-    if (searchMode.value === 'cached') {
-        const totalCached = treeDataProvider.getCachedNodeCount();
-        if (totalCached === 0) {
-            vscode.window.showWarningMessage('No nodes in cache. Please expand the tree view first or use "Search All Nodes" mode.');
-            return;
-        }
-    }
-
     // 选择搜索范围
     const searchScope = await vscode.window.showQuickPick(
         [
@@ -131,85 +101,50 @@ export async function searchNodeCommand(
         {
             location: vscode.ProgressLocation.Notification,
             title: `Searching for "${searchTerm}"`,
-            cancellable: searchMode.value === 'full'
+            cancellable: true
         },
         async (progress, token) => {
             const results: SearchResult[] = [];
-            let totalNodes = 0;
             let searchedNodes = 0;
 
-            if (searchMode.value === 'cached') {
-                // 快速缓存搜索
-                progress.report({ message: 'Searching cached nodes...' });
+            // 执行完整搜索
+            for (const [connectionId, client] of connectionsToSearch) {
+                if (token.isCancellationRequested) {
+                    break;
+                }
 
-                for (const [connectionId] of connectionsToSearch) {
-                    const config = connectionManager.getConnectionConfig(connectionId);
-                    const connectionName = config?.name || config?.endpointUrl || connectionId;
+                const config = connectionManager.getConnectionConfig(connectionId);
+                const connectionName = config?.name || config?.endpointUrl || connectionId;
+                let previousCount = 0;
 
-                    const cachedResults = treeDataProvider.searchCachedNodes(
+                progress.report({
+                    message: `Searching in ${connectionName}...`
+                });
+
+                try {
+                    const searchResults = await client.searchNodes(
                         searchTerm,
-                        searchScope.value === 'all' ? undefined : connectionId
+                        (current: number, total: number) => {
+                            const increment = current - previousCount;
+                            previousCount = current;
+                            searchedNodes += increment > 0 ? increment : 0;
+                            progress.report({
+                                message: `Searching in ${connectionName}... (${current}/${total} nodes)`
+                            });
+                        },
+                        token
                     );
 
-                    searchedNodes += treeDataProvider.getCachedNodeCount(connectionId);
-
-                    // 转换为统一的搜索结果格式
-                    results.push(...cachedResults.map(r => ({
-                        nodeId: r.node.nodeId,
-                        displayName: r.node.displayName,
-                        browseName: r.node.nodeId,
-                        nodeClass: getNodeClassText(r.node.nodeClass),
-                        path: r.path,
-                        nodeIdPath: r.nodeIdPath,
+                    results.push(...searchResults.map((r: NodeSearchResult): SearchResult => ({
+                        ...r,
                         connectionId,
                         connectionName
                     })));
-                }
-
-                progress.report({
-                    message: `Found ${results.length} results in ${searchedNodes} cached nodes`
-                });
-            } else {
-                // 完整搜索
-                for (const [connectionId, client] of connectionsToSearch) {
-                    if (token.isCancellationRequested) {
-                        break;
-                    }
-
-                    const config = connectionManager.getConnectionConfig(connectionId);
-                    const connectionName = config?.name || config?.endpointUrl || connectionId;
-
-                    progress.report({
-                        message: `Searching in ${connectionName}...`
-                    });
-
-                    try {
-                        // 执行搜索
-                        const searchResults = await client.searchNodes(
-                            searchTerm,
-                            (current: number, total: number) => {
-                                searchedNodes = current;
-                                totalNodes = total;
-                                progress.report({
-                                    message: `Searching in ${connectionName}... (${current}/${total} nodes)`,
-                                    increment: total > 0 ? (1 / total) * 100 : 0
-                                });
-                            },
-                            token
-                        );
-
-                        // 将结果添加到总结果中
-                        results.push(...searchResults.map((r: NodeSearchResult): SearchResult => ({
-                            ...r,
-                            connectionId,
-                            connectionName
-                        })));
-                    } catch (error) {
-                        console.error(`Error searching in connection ${connectionId}:`, error);
-                        vscode.window.showErrorMessage(
-                            `Error searching in ${connectionName}: ${error instanceof Error ? error.message : 'Unknown error'}`
-                        );
-                    }
+                } catch (error) {
+                    console.error(`Error searching in connection ${connectionId}:`, error);
+                    vscode.window.showErrorMessage(
+                        `Error searching in ${connectionName}: ${error instanceof Error ? error.message : 'Unknown error'}`
+                    );
                 }
             }
 
@@ -282,19 +217,6 @@ function getNodeClassNumber(nodeClassName: string): number {
     return nodeClassMap[nodeClassName] || 0;
 }
 
-function getNodeClassText(nodeClass: number): string {
-    const nodeClassNames: { [key: number]: string } = {
-        1: 'Object',
-        2: 'Variable',
-        4: 'Method',
-        8: 'ObjectType',
-        16: 'VariableType',
-        32: 'ReferenceType',
-        64: 'DataType',
-        128: 'View'
-    };
-    return nodeClassNames[nodeClass] || 'Unknown';
-}
 
 async function revealNodeInTree(
     treeView: vscode.TreeView<any>,
