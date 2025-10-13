@@ -12,7 +12,8 @@ import {
     NodeId,
     coerceNodeId,
     ReadValueIdOptions,
-    BrowseDescriptionOptions
+    BrowseDescriptionOptions,
+    BrowseResult
 } from 'node-opcua';
 import { OpcuaConnectionConfig, OpcuaNodeInfo, OpcuaReference, ConnectionStatus } from '../types';
 
@@ -124,10 +125,38 @@ export class OpcuaClient {
             };
 
             const browseResult = await this.session.browse(browseDescription);
+            const references: ReferenceDescription[] = [...(browseResult.references || [])];
 
-            console.log(`Browsed node ${nodeId}, found ${browseResult.references?.length || 0} references`);
+            let continuationPoint: Buffer | null = browseResult.continuationPoint || null;
 
-            return browseResult.references || [];
+            while (continuationPoint && continuationPoint.length > 0) {
+                const moreResults: BrowseResult[] = await this.session.browseNext([continuationPoint], false);
+                const [nextResult] = moreResults;
+
+                if (!nextResult) {
+                    break;
+                }
+
+                if (nextResult.references && nextResult.references.length > 0) {
+                    references.push(...nextResult.references);
+                }
+
+                continuationPoint = nextResult.continuationPoint && nextResult.continuationPoint.length > 0
+                    ? nextResult.continuationPoint
+                    : null;
+            }
+
+            if (continuationPoint && continuationPoint.length > 0) {
+                try {
+                    await this.session.browseNext([continuationPoint], true);
+                } catch (releaseError) {
+                    console.warn('Failed to release continuation point:', releaseError);
+                }
+            }
+
+            console.log(`Browsed node ${nodeId}, found ${references.length} references (including continuation points)`);
+
+            return references;
         } catch (error) {
             console.error('Error browsing node:', error);
             throw error;
