@@ -123,8 +123,8 @@ export function activate(context: vscode.ExtensionContext) {
     const addNodeToDataViewCmd = vscode.commands.registerCommand(
         'opcua.dataView.addNode',
         async (node: OpcuaNode) => {
-            const entry = await addNodeToDataViewCommand(connectionManager, dataViewManager, node);
-            if (entry) {
+            const result = await addNodeToDataViewCommand(connectionManager, dataViewManager, node);
+            if (result) {
                 await DataViewPanel.show(context.extensionUri, connectionManager, dataViewManager);
             }
         }

@@ -33,6 +33,17 @@ export interface NodeValueSnapshot {
     error?: string;
 }
 
+export interface VariableNodeSummary {
+    nodeId: string;
+    displayName?: string;
+    browseName?: string;
+}
+
+export interface VariableNodeCollectionResult {
+    nodes: VariableNodeSummary[];
+    truncated: boolean;
+}
+
 export class OpcuaClient {
     private client: OPCUAClient | null = null;
     private session: ClientSession | null = null;
@@ -327,6 +338,82 @@ export class OpcuaClient {
                 error: error instanceof Error ? error.message : String(error)
             }));
         }
+    }
+
+    async collectVariableDescendantNodes(
+        nodeId: string,
+        options?: {
+            includeNonHierarchical?: boolean;
+            maxDepth?: number;
+            maxNodes?: number;
+        }
+    ): Promise<VariableNodeCollectionResult> {
+        if (!this.session) {
+            throw new Error('Not connected to OPC UA server');
+        }
+
+        const includeNonHierarchical = options?.includeNonHierarchical ?? true;
+        const maxDepth = options?.maxDepth ?? 10;
+        const maxNodes = options?.maxNodes ?? 500;
+
+        const visited = new Set<string>();
+        visited.add(normalizeNodeIdInput(nodeId));
+
+        const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId, depth: 0 }];
+        const nodes: VariableNodeSummary[] = [];
+        let truncated = false;
+
+        outer: while (queue.length > 0) {
+            const current = queue.shift();
+            if (!current) {
+                break;
+            }
+
+            if (current.depth > maxDepth) {
+                continue;
+            }
+
+            let references: ReferenceDescription[];
+            try {
+                references = await this.browseWithOptions(current.nodeId, {
+                    includeNonHierarchical
+                });
+            } catch (error) {
+                console.error(`Error browsing node ${current.nodeId}:`, error);
+                continue;
+            }
+
+            for (const ref of references) {
+                const childNodeId = ref.nodeId.toString();
+                const normalized = normalizeNodeIdInput(childNodeId);
+                if (visited.has(normalized)) {
+                    continue;
+                }
+                visited.add(normalized);
+
+                if (ref.nodeClass === NodeClass.Variable) {
+                    nodes.push({
+                        nodeId: childNodeId,
+                        displayName: ref.displayName.text || ref.browseName.name || undefined,
+                        browseName: ref.browseName.name || undefined
+                    });
+                    if (nodes.length >= maxNodes) {
+                        truncated = true;
+                        break outer;
+                    }
+                } else if (
+                    (ref.nodeClass === NodeClass.Object || ref.nodeClass === NodeClass.View) &&
+                    current.depth < maxDepth
+                ) {
+                    queue.push({
+                        nodeId: childNodeId,
+                        depth: current.depth + 1
+                    });
+                }
+            }
+        }
+
+        return { nodes, truncated };
     }
 
     async getReferences(nodeId: string): Promise<OpcuaReference[]> {
