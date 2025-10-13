@@ -2,7 +2,8 @@
   "name": "opcua-browser",
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
-  "version": "0.0.5",
+  "icon": "resources/opcua-icon.png",
+  "version": "0.0.6",
   "engines": {
     "vscode": "^1.75.0"
   },
