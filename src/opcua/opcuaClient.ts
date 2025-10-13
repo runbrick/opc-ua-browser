@@ -21,6 +21,18 @@ import { normalizeNodeIdInput } from '../utils/nodeIdUtils';
 
 const HIERARCHICAL_REFERENCES_NODE_ID = coerceNodeId(ReferenceTypeIds.HierarchicalReferences);
 
+export interface NodeValueSnapshot {
+    nodeId: string;
+    displayName?: string;
+    value?: any;
+    dataType?: string;
+    nodeClass?: string;
+    statusCode?: string;
+    sourceTimestamp?: string;
+    serverTimestamp?: string;
+    error?: string;
+}
+
 export class OpcuaClient {
     private client: OPCUAClient | null = null;
     private session: ClientSession | null = null;
@@ -229,6 +241,91 @@ export class OpcuaClient {
         } catch (error) {
             console.error('Error reading node attributes:', error);
             throw error;
+        }
+    }
+
+    async readNodeSnapshots(nodeIds: string[]): Promise<NodeValueSnapshot[]> {
+        if (!this.session) {
+            throw new Error('Not connected to OPC UA server');
+        }
+
+        if (nodeIds.length === 0) {
+            return [];
+        }
+
+        const attributeOrder = [
+            AttributeIds.DisplayName,
+            AttributeIds.Value,
+            AttributeIds.DataType,
+            AttributeIds.NodeClass
+        ];
+
+        const nodesToRead: ReadValueIdOptions[] = [];
+        const normalizedIds: string[] = [];
+
+        for (const nodeId of nodeIds) {
+            const normalized = normalizeNodeIdInput(nodeId);
+            normalizedIds.push(normalized);
+            for (const attributeId of attributeOrder) {
+                nodesToRead.push({
+                    nodeId: coerceNodeId(normalized),
+                    attributeId
+                });
+            }
+        }
+
+        try {
+            const dataValues: DataValue[] = await this.session.read(nodesToRead);
+            const results: NodeValueSnapshot[] = [];
+
+            const attributesPerNode = attributeOrder.length;
+
+            for (let index = 0; index < normalizedIds.length; index++) {
+                const baseIndex = index * attributesPerNode;
+                const displayNameValue = dataValues[baseIndex]?.value?.value;
+                const valueData = dataValues[baseIndex + 1];
+                const dataTypeValue = dataValues[baseIndex + 2]?.value?.value;
+                const nodeClassValue = dataValues[baseIndex + 3]?.value?.value;
+
+                const statusCodeString = valueData?.statusCode?.toString();
+                const statusNotGood =
+                    valueData?.statusCode &&
+                    typeof (valueData.statusCode as any).isNotGood === 'function'
+                        ? (valueData.statusCode as any).isNotGood()
+                        : (statusCodeString ? statusCodeString.toLowerCase().includes('bad') : false);
+
+                const snapshot: NodeValueSnapshot = {
+                    nodeId: nodeIds[index],
+                    displayName: displayNameValue?.text || displayNameValue?.name || undefined,
+                    value: valueData?.value?.value,
+                    dataType: typeof dataTypeValue === 'object' && dataTypeValue !== null
+                        ? dataTypeValue.toString()
+                        : dataTypeValue?.toString(),
+                    nodeClass: typeof nodeClassValue === 'number'
+                        ? NodeClass[nodeClassValue] || 'Unknown'
+                        : undefined,
+                    statusCode: statusCodeString,
+                    sourceTimestamp: valueData?.sourceTimestamp
+                        ? valueData.sourceTimestamp.toISOString()
+                        : undefined,
+                    serverTimestamp: valueData?.serverTimestamp
+                        ? valueData.serverTimestamp.toISOString()
+                        : undefined
+                };
+
+                if (statusNotGood) {
+                    snapshot.error = statusCodeString;
+                }
+
+                results.push(snapshot);
+            }
+
+            return results;
+        } catch (error) {
+            return nodeIds.map((nodeId) => ({
+                nodeId,
+                error: error instanceof Error ? error.message : String(error)
+            }));
         }
     }
 

@@ -2,7 +2,7 @@
   "name": "opcua-browser",
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -10,7 +10,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:opcuaConnections"
+    "onView:opcuaConnections",
+    "onCommand:opcua.openDataView",
+    "onCommand:opcua.dataView.addNode"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -91,6 +93,16 @@
         "command": "opcua.searchNodesForConnection",
         "title": "Search Nodes in Connection",
         "icon": "$(search)"
+      },
+      {
+        "command": "opcua.openDataView",
+        "title": "Open Data View",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "opcua.dataView.addNode",
+        "title": "Add Node to Data View",
+        "icon": "$(preview)"
       }
     ],
     "menus": {
@@ -109,6 +121,11 @@
           "command": "opcua.searchNodes",
           "when": "view == opcuaConnections",
           "group": "navigation@3"
+        },
+        {
+          "command": "opcua.openDataView",
+          "when": "view == opcuaConnections",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -151,6 +168,11 @@
           "command": "opcua.exportNodeToExcel",
           "when": "view == opcuaConnections && viewItem == opcua-node",
           "group": "export@2"
+        },
+        {
+          "command": "opcua.dataView.addNode",
+          "when": "view == opcuaConnections && viewItem == opcua-node",
+          "group": "inline@3"
         }
       ]
     }

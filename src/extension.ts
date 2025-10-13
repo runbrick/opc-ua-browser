@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './opcua/connectionManager';
 import { OpcuaTreeDataProvider, OpcuaNode, ConnectionNode } from './providers/opcuaTreeDataProvider';
 import { NodeDetailPanel } from './webview/NodeDetailPanel';
+import { DataViewPanel } from './webview/DataViewPanel';
 import {
     addConnectionCommand,
     connectCommand,
@@ -12,19 +13,22 @@ import {
 } from './commands/connectionCommands';
 import { exportNodeCommand, exportNodeToExcelCommand } from './commands/exportCommands';
 import { searchNodeCommand, searchNodeInConnectionCommand } from './commands/searchCommands';
+import { DataViewManager } from './providers/dataViewManager';
+import { addNodeToDataViewCommand } from './commands/dataViewCommands';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('OPC UA Browser extension is now active!');
 
     // 初始化连接管理器
     const connectionManager = new ConnectionManager(context);
+    const dataViewManager = new DataViewManager(context, connectionManager);
 
     // 初始化树视图数据提供者
     const treeDataProvider = new OpcuaTreeDataProvider(connectionManager);
 
     // 注册树视图
     const treeView = vscode.window.createTreeView('opcuaConnections', {
-        treeDataProvider: treeDataProvider,
+        treeDataProvider,
         showCollapseAll: true
     });
 
@@ -115,6 +119,24 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    // 注册命令：添加监控节点到 Data View
+    const addNodeToDataViewCmd = vscode.commands.registerCommand(
+        'opcua.dataView.addNode',
+        async (node: OpcuaNode) => {
+            const entry = await addNodeToDataViewCommand(connectionManager, dataViewManager, node);
+            if (entry) {
+                await DataViewPanel.show(context.extensionUri, connectionManager, dataViewManager);
+            }
+        }
+    );
+
+    const openDataViewCmd = vscode.commands.registerCommand(
+        'opcua.openDataView',
+        async () => {
+            await DataViewPanel.show(context.extensionUri, connectionManager, dataViewManager);
+        }
+    );
+
     // 注册命令：导出节点为 JSON
     const exportNodeCmd = vscode.commands.registerCommand(
         'opcua.exportNode',
@@ -159,6 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
     // 将所有命令和资源添加到订阅中
     context.subscriptions.push(
         treeView,
+        dataViewManager,
         addConnectionCmd,
         refreshConnectionsCmd,
         connectCmd,
@@ -166,6 +189,8 @@ export function activate(context: vscode.ExtensionContext) {
         deleteConnectionCmd,
         editConnectionCmd,
         showNodeDetailsCmd,
+        addNodeToDataViewCmd,
+        openDataViewCmd,
         exportNodeCmd,
         exportNodeToExcelCmd,
         searchNodesCmd,
