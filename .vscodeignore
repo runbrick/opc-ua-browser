@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 src/**
+node_modules/**
 .gitignore
 .yarnrc
 webpack.config.js
