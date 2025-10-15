@@ -3,7 +3,7 @@
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
   "icon": "resources/opcua-icon.png",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -74,11 +74,6 @@
       {
         "command": "opcua.showNodeDetails",
         "title": "Show Node Details"
-      },
-      {
-        "command": "opcua.exportNode",
-        "title": "Export Node to JSON",
-        "icon": "$(export)"
       },
       {
         "command": "opcua.exportNodeToExcel",
@@ -161,14 +156,9 @@
           "group": "management@1"
         },
         {
-          "command": "opcua.exportNode",
-          "when": "view == opcuaConnections && viewItem == opcua-node",
-          "group": "export@1"
-        },
-        {
           "command": "opcua.exportNodeToExcel",
           "when": "view == opcuaConnections && viewItem == opcua-node",
-          "group": "export@2"
+          "group": "export@1"
         },
         {
           "command": "opcua.dataView.addNode",

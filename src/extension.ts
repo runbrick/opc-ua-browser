@@ -11,7 +11,7 @@ import {
     editConnectionCommand,
     refreshConnectionsCommand
 } from './commands/connectionCommands';
-import { exportNodeCommand, exportNodeToExcelCommand } from './commands/exportCommands';
+import { exportNodeToExcelCommand } from './commands/exportCommands';
 import { searchNodeCommand, searchNodeInConnectionCommand } from './commands/searchCommands';
 import { DataViewManager } from './providers/dataViewManager';
 import { addNodeToDataViewCommand } from './commands/dataViewCommands';
@@ -137,16 +137,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：导出节点为 JSON
-    const exportNodeCmd = vscode.commands.registerCommand(
-        'opcua.exportNode',
-        async (node: OpcuaNode) => {
-            if (node instanceof OpcuaNode) {
-                await exportNodeCommand(connectionManager, node);
-            }
-        }
-    );
-
     // 注册命令：导出节点为 Excel
     const exportNodeToExcelCmd = vscode.commands.registerCommand(
         'opcua.exportNodeToExcel',
@@ -191,7 +181,6 @@ export function activate(context: vscode.ExtensionContext) {
         showNodeDetailsCmd,
         addNodeToDataViewCmd,
         openDataViewCmd,
-        exportNodeCmd,
         exportNodeToExcelCmd,
         searchNodesCmd,
         searchNodesForConnectionCmd,
