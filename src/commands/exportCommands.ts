@@ -1,23 +1,73 @@
-import * as vscode from 'vscode';
-import { ConnectionManager } from '../opcua/connectionManager';
-import { OpcuaNode } from '../providers/opcuaTreeDataProvider';
-import { exportNodeToExcel, exportNodeTreeToExcel } from '../utils/excelExporter';
-import { OpcuaNodeInfo } from '../types';
+import * as vscode from "vscode";
+import { ConnectionManager } from "../opcua/connectionManager";
+import { OpcuaNode } from "../providers/opcuaTreeDataProvider";
+import { exportVariableRowsToExcel, VariableNodeExportRow } from "../utils/excelExporter";
+import { formatDataType } from "../utils/dataTypeMapper";
 
-/**
- * 导出节点为 JSON 格式
- */
+const CANCELLED_ERROR_MESSAGE = "Operation cancelled";
+const PROGRESS_UPDATE_INTERVAL_MS = 300;
+const VARIABLE_NODE_CLASS = "variable";
+const NO_VARIABLE_NODES_MESSAGE = "No Variable nodes found to export.";
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isCancellationError(error: unknown): boolean {
+    return error instanceof Error && error.message === CANCELLED_ERROR_MESSAGE;
+}
+
+function normalizeDataType(dataType?: string): string {
+    if (!dataType) {
+        return "";
+    }
+    const formatted = formatDataType(dataType);
+    return formatted || dataType;
+}
+
+function isVariableNodeLike(node: { nodeClass?: string | null }): boolean {
+    if (!node || typeof node.nodeClass !== "string") {
+        return false;
+    }
+    return node.nodeClass.toLowerCase() === VARIABLE_NODE_CLASS;
+}
+
+function toVariableExportRow(node: { nodeId?: string; displayName?: string; browseName?: string; dataType?: string }): VariableNodeExportRow {
+    return {
+        NodeId: node.nodeId ?? "",
+        DisplayName: node.displayName ?? "",
+        BrowseName: node.browseName ?? "",
+        DataType: normalizeDataType(node.dataType)
+    };
+}
+
+function collectVariableRows(entry: any, rows: VariableNodeExportRow[]): void {
+    if (!entry) {
+        return;
+    }
+
+    if (isVariableNodeLike(entry) && typeof entry.nodeId === "string" && entry.nodeId.length > 0) {
+        rows.push(toVariableExportRow(entry));
+    }
+
+    if (Array.isArray(entry.children)) {
+        for (const child of entry.children) {
+            collectVariableRows(child, rows);
+        }
+    }
+}
+
 export async function exportNodeCommand(
     connectionManager: ConnectionManager,
     node: OpcuaNode
 ): Promise<void> {
     try {
-        // 显示保存对话框
+        const label = node.displayName || node.label || node.nodeId;
         const uri = await vscode.window.showSaveDialog({
-            defaultUri: vscode.Uri.file(`${node.displayName}.json`),
+            defaultUri: vscode.Uri.file(`${label}.json`),
             filters: {
-                'JSON Files': ['json'],
-                'All Files': ['*']
+                "JSON Files": ["json"],
+                "All Files": ["*"]
             }
         });
 
@@ -25,13 +75,12 @@ export async function exportNodeCommand(
             return;
         }
 
-        // 询问是否递归导出
         const recursive = await vscode.window.showQuickPick(
             [
-                { label: 'Export node only', value: false },
-                { label: 'Export node and all children (recursive)', value: true }
+                { label: "Export node only", value: false },
+                { label: "Export node and all children (recursive)", value: true }
             ],
-            { placeHolder: 'Select export mode' }
+            { placeHolder: "Select export mode" }
         );
 
         if (!recursive) {
@@ -41,77 +90,99 @@ export async function exportNodeCommand(
         await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: 'Exporting node to JSON...',
-                cancellable: false
+                title: `Exporting "${label}" to JSON...`,
+                cancellable: true
             },
-            async (progress) => {
+            async (progress, token) => {
                 const client = connectionManager.getConnection(node.connectionId);
                 if (!client || !client.isConnected) {
-                    throw new Error('Not connected to OPC UA server');
+                    throw new Error("Not connected to OPC UA server");
                 }
 
-                let exportData: any;
+                token.onCancellationRequested(() => {
+                    progress.report({ message: "Cancelling export..." });
+                });
 
+                let exportRows: VariableNodeExportRow[] = [];
                 if (recursive.value) {
-                    // 递归导出
-                    progress.report({ message: 'Recursively browsing nodes...' });
-                    exportData = await client.recursiveBrowse(node.nodeId, 10);
+                    progress.report({ message: "Collecting node tree..." });
+                    let lastReported = 0;
+                    const treeData = await client.recursiveBrowse(node.nodeId, {
+                        maxDepth: 10,
+                        concurrency: 6,
+                        cancellationToken: token,
+                        progress: ({ processed }) => {
+                            const now = Date.now();
+                            if (processed === 1 || now - lastReported >= PROGRESS_UPDATE_INTERVAL_MS) {
+                                progress.report({ message: `Collected ${processed} nodes...` });
+                                lastReported = now;
+                            }
+                        }
+                    });
+
+                    if (!treeData) {
+                        throw new Error("Unable to collect node data for export.");
+                    }
+
+                    const rows: VariableNodeExportRow[] = [];
+                    collectVariableRows(treeData, rows);
+                    exportRows = rows;
                 } else {
-                    // 仅导出当前节点
-                    progress.report({ message: 'Reading node attributes...' });
+                    progress.report({ message: "Reading node attributes..." });
                     const nodeInfo = await client.readNodeAttributes(node.nodeId);
-                    const references = await client.getReferences(node.nodeId);
-
-                    exportData = {
-                        ...nodeInfo,
-                        references: references
-                    };
+                    if (isVariableNodeLike(nodeInfo)) {
+                        exportRows = [toVariableExportRow(nodeInfo)];
+                    }
                 }
 
-                // 写入文件
-                progress.report({ message: 'Writing to file...' });
-                const content = JSON.stringify(exportData, null, 2);
-                await vscode.workspace.fs.writeFile(
-                    uri,
-                    Buffer.from(content, 'utf8')
-                );
-
-                vscode.window.showInformationMessage(
-                    `Node exported successfully to ${uri.fsPath}`
-                );
-
-                // 询问是否打开文件
-                const openFile = await vscode.window.showInformationMessage(
-                    'Export complete. Would you like to open the file?',
-                    'Open',
-                    'Cancel'
-                );
-
-                if (openFile === 'Open') {
-                    const document = await vscode.workspace.openTextDocument(uri);
-                    await vscode.window.showTextDocument(document);
+                if (token.isCancellationRequested) {
+                    throw new Error(CANCELLED_ERROR_MESSAGE);
                 }
+
+                if (exportRows.length === 0) {
+                    throw new Error(NO_VARIABLE_NODES_MESSAGE);
+                }
+
+                progress.report({ message: "Writing JSON file..." });
+                const content = JSON.stringify(exportRows, null, 2);
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+
+                progress.report({ message: "Export complete." });
+                await delay(700);
             }
         );
+
+        vscode.window.setStatusBarMessage(`$(check) JSON export saved: ${uri.fsPath}`, 5000);
+        vscode.window.showInformationMessage("Node export completed", {
+            detail: uri.fsPath
+        });
     } catch (error) {
-        vscode.window.showErrorMessage(`Failed to export node: ${error}`);
+        if (isCancellationError(error)) {
+            vscode.window.setStatusBarMessage("Node export cancelled.", 3000);
+            return;
+        }
+
+        if (error instanceof Error && error.message === NO_VARIABLE_NODES_MESSAGE) {
+            vscode.window.showWarningMessage("No Variable nodes found for the selected scope.");
+            return;
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Failed to export node: ${message}`);
     }
 }
 
-/**
- * 导出节点为 Excel 格式
- */
 export async function exportNodeToExcelCommand(
     connectionManager: ConnectionManager,
     node: OpcuaNode
 ): Promise<void> {
     try {
-        // 显示保存对话框
+        const label = node.displayName || node.label || node.nodeId;
         const uri = await vscode.window.showSaveDialog({
-            defaultUri: vscode.Uri.file(`${node.displayName}.xlsx`),
+            defaultUri: vscode.Uri.file(`${label}.xlsx`),
             filters: {
-                'Excel Files': ['xlsx'],
-                'All Files': ['*']
+                "Excel Files": ["xlsx"],
+                "All Files": ["*"]
             }
         });
 
@@ -119,13 +190,12 @@ export async function exportNodeToExcelCommand(
             return;
         }
 
-        // 询问是否递归导出
         const recursive = await vscode.window.showQuickPick(
             [
-                { label: 'Export node only', value: false },
-                { label: 'Export node and all children (recursive)', value: true }
+                { label: "Export node only", value: false },
+                { label: "Export node and all children (recursive)", value: true }
             ],
-            { placeHolder: 'Select export mode' }
+            { placeHolder: "Select export mode" }
         );
 
         if (!recursive) {
@@ -135,65 +205,100 @@ export async function exportNodeToExcelCommand(
         await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: 'Exporting node to Excel...',
-                cancellable: false
+                title: `Exporting "${label}" to Excel...`,
+                cancellable: true
             },
-            async (progress) => {
+            async (progress, token) => {
                 const client = connectionManager.getConnection(node.connectionId);
                 if (!client || !client.isConnected) {
-                    throw new Error('Not connected to OPC UA server');
+                    throw new Error("Not connected to OPC UA server");
                 }
+
+                token.onCancellationRequested(() => {
+                    progress.report({ message: "Cancelling export..." });
+                });
+
+                let exportRows: VariableNodeExportRow[] = [];
+                let summaryRootLabel: string | undefined = label;
+                let summaryRootNodeId: string | undefined = node.nodeId;
 
                 if (recursive.value) {
-                    // 递归导出
-                    progress.report({ message: 'Recursively browsing nodes...' });
-                    const treeData = await client.recursiveBrowse(node.nodeId, 10);
-
-                    // 收集所有节点
-                    const allNodes: OpcuaNodeInfo[] = [];
-
-                    function collectNodes(data: any): void {
-                        if (data.nodeId) {
-                            allNodes.push(data);
+                    progress.report({ message: "Collecting node tree..." });
+                    let lastReported = 0;
+                    const treeData = await client.recursiveBrowse(node.nodeId, {
+                        maxDepth: 10,
+                        concurrency: 6,
+                        cancellationToken: token,
+                        progress: ({ processed }) => {
+                            const now = Date.now();
+                            if (processed === 1 || now - lastReported >= PROGRESS_UPDATE_INTERVAL_MS) {
+                                progress.report({ message: `Collected ${processed} nodes...` });
+                                lastReported = now;
+                            }
                         }
-                        if (data.children && Array.isArray(data.children)) {
-                            data.children.forEach((child: any) => collectNodes(child));
-                        }
+                    });
+
+                    if (!treeData) {
+                        throw new Error("Unable to collect node data for export.");
                     }
 
-                    collectNodes(treeData);
-
-                    // 导出到 Excel
-                    progress.report({ message: 'Writing to Excel file...' });
-                    const rootNode = allNodes.shift()!;
-                    await exportNodeTreeToExcel(rootNode, allNodes, uri.fsPath);
+                    const rows: VariableNodeExportRow[] = [];
+                    collectVariableRows(treeData, rows);
+                    exportRows = rows;
+                    summaryRootLabel = treeData.displayName || treeData.browseName || treeData.nodeId || label;
+                    summaryRootNodeId = treeData.nodeId ?? summaryRootNodeId;
                 } else {
-                    // 仅导出当前节点
-                    progress.report({ message: 'Reading node attributes...' });
+                    progress.report({ message: "Reading node attributes..." });
                     const nodeInfo = await client.readNodeAttributes(node.nodeId);
-
-                    // 导出到 Excel
-                    progress.report({ message: 'Writing to Excel file...' });
-                    await exportNodeToExcel(nodeInfo, uri.fsPath);
+                    if (isVariableNodeLike(nodeInfo)) {
+                        exportRows = [toVariableExportRow(nodeInfo)];
+                    }
+                    summaryRootLabel = nodeInfo.displayName || nodeInfo.browseName || nodeInfo.nodeId || label;
+                    summaryRootNodeId = nodeInfo.nodeId ?? summaryRootNodeId;
                 }
 
-                vscode.window.showInformationMessage(
-                    `Node exported successfully to ${uri.fsPath}`
-                );
-
-                // 询问是否打开文件
-                const openFile = await vscode.window.showInformationMessage(
-                    'Export complete. Would you like to open the file?',
-                    'Open',
-                    'Cancel'
-                );
-
-                if (openFile === 'Open') {
-                    await vscode.env.openExternal(uri);
+                if (token.isCancellationRequested) {
+                    throw new Error(CANCELLED_ERROR_MESSAGE);
                 }
+
+                if (exportRows.length === 0) {
+                    throw new Error(NO_VARIABLE_NODES_MESSAGE);
+                }
+
+                progress.report({ message: "Writing Excel file..." });
+                const summaryRows: Array<{ Property: string; Value: string | number | undefined }> = [
+                    { Property: "Total Variable Nodes", Value: exportRows.length },
+                    ...(summaryRootLabel ? [{ Property: "Root Node", Value: summaryRootLabel }] : []),
+                    ...(summaryRootNodeId ? [{ Property: "Root NodeId", Value: summaryRootNodeId }] : []),
+                    { Property: "Export Date", Value: new Date().toISOString() }
+                ];
+
+                await exportVariableRowsToExcel(exportRows, uri.fsPath, {
+                    sheetName: summaryRootLabel ?? "Variable Nodes",
+                    summary: summaryRows
+                });
+
+                progress.report({ message: "Export complete." });
+                await delay(700);
             }
         );
+
+        vscode.window.setStatusBarMessage(`$(check) Excel export saved: ${uri.fsPath}`, 5000);
+        vscode.window.showInformationMessage("Node export to Excel completed", {
+            detail: uri.fsPath
+        });
     } catch (error) {
-        vscode.window.showErrorMessage(`Failed to export node to Excel: ${error}`);
+        if (isCancellationError(error)) {
+            vscode.window.setStatusBarMessage("Excel export cancelled.", 3000);
+            return;
+        }
+
+        if (error instanceof Error && error.message === NO_VARIABLE_NODES_MESSAGE) {
+            vscode.window.showWarningMessage("No Variable nodes found for the selected scope.");
+            return;
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Failed to export node to Excel: ${message}`);
     }
 }

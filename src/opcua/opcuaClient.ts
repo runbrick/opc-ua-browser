@@ -33,6 +33,38 @@ export interface NodeValueSnapshot {
     error?: string;
 }
 
+async function mapWithConcurrency<T, R>(
+    items: readonly T[],
+    limit: number,
+    mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+    if (items.length === 0) {
+        return [];
+    }
+
+    const results: R[] = new Array(items.length);
+    let nextIndex = 0;
+
+    const worker = async (): Promise<void> => {
+        while (nextIndex < items.length) {
+            const currentIndex = nextIndex;
+            nextIndex += 1;
+
+            try {
+                results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+            } catch (error) {
+                console.error('Error in concurrent mapper:', error);
+                results[currentIndex] = undefined as unknown as R;
+            }
+        }
+    };
+
+    const workers = new Array(Math.min(Math.max(1, limit), items.length)).fill(0).map(() => worker());
+    await Promise.all(workers);
+    return results;
+}
+
+
 export interface VariableNodeSummary {
     nodeId: string;
     displayName?: string;
@@ -151,10 +183,10 @@ export class OpcuaClient {
         }
 
         try {
-            // 处理特殊的 RootFolder 标识符
+            // Normalize RootFolder identifier quirks
             let actualNodeId = nodeId;
             if (nodeId === 'RootFolder' || nodeId === 'i=84') {
-                actualNodeId = 'i=84'; // RootFolder 的标准 NodeId
+                actualNodeId = 'i=84'; // Standard NodeId for RootFolder
             }
 
             const browseDescription: BrowseDescriptionOptions = {
@@ -453,32 +485,103 @@ export class OpcuaClient {
         }
     }
 
-    async recursiveBrowse(nodeId: string, maxDepth: number = 10, currentDepth: number = 0): Promise<any> {
-        if (currentDepth >= maxDepth) {
-            return null;
-        }
+    async recursiveBrowse(
+        nodeId: string,
+        maxDepthOrOptions: number | {
+            maxDepth?: number;
+            progress?: (info: { processed: number; depth: number; nodeId: string }) => void;
+            cancellationToken?: { isCancellationRequested: boolean };
+            concurrency?: number;
+        } = 10,
+        currentDepth: number = 0
+    ): Promise<any> {
+        const options = typeof maxDepthOrOptions === 'number'
+            ? { maxDepth: maxDepthOrOptions }
+            : (maxDepthOrOptions ?? {});
 
-        try {
-            const nodeInfo = await this.readNodeAttributes(nodeId);
-            const children = await this.browse(nodeId);
+        const state = {
+            maxDepth: options.maxDepth ?? (typeof maxDepthOrOptions === 'number' ? maxDepthOrOptions : 10),
+            concurrency: Math.max(1, options.concurrency ?? 6),
+            progress: options.progress,
+            cancellationToken: options.cancellationToken,
+            processed: 0
+        };
+
+        const walk = async (targetNodeId: string, depth: number): Promise<any> => {
+            if (depth >= state.maxDepth) {
+                return null;
+            }
+
+            if (state.cancellationToken?.isCancellationRequested) {
+                throw new Error('Operation cancelled');
+            }
+
+            let nodeInfo: OpcuaNodeInfo;
+            try {
+                nodeInfo = await this.readNodeAttributes(targetNodeId);
+            } catch (error) {
+                console.error('Error reading node attributes during recursive browse:', error);
+                return null;
+            }
+
+            state.processed += 1;
+            try {
+                state.progress?.({
+                    processed: state.processed,
+                    depth,
+                    nodeId: targetNodeId
+                });
+            } catch (progressError) {
+                console.warn('Progress callback failed during recursive browse:', progressError);
+            }
 
             const result: any = {
                 ...nodeInfo,
                 children: []
             };
 
-            for (const child of children) {
-                const childData = await this.recursiveBrowse(
-                    child.nodeId.toString(),
-                    maxDepth,
-                    currentDepth + 1
-                );
-                if (childData) {
-                    result.children.push(childData);
+            if (depth + 1 >= state.maxDepth) {
+                return result;
+            }
+
+            let children: ReferenceDescription[];
+            try {
+                children = await this.browse(targetNodeId);
+            } catch (error) {
+                console.error('Error browsing node during recursive browse:', error);
+                return result;
+            }
+
+            const childResults = await mapWithConcurrency(
+                children,
+                state.concurrency,
+                async (child) => {
+                    if (!child.nodeId) {
+                        return null;
+                    }
+                    if (state.cancellationToken?.isCancellationRequested) {
+                        return null;
+                    }
+                    try {
+                        return await walk(child.nodeId.toString(), depth + 1);
+                    } catch (error) {
+                        console.error('Error walking child node during recursive browse:', error);
+                        return null;
+                    }
+                }
+            );
+
+            for (const child of childResults) {
+                if (child) {
+                    result.children.push(child);
                 }
             }
 
             return result;
+        };
+
+        try {
+            return await walk(nodeId, currentDepth);
         } catch (error) {
             console.error('Error in recursive browse:', error);
             return null;
@@ -642,20 +745,20 @@ export class OpcuaClient {
         let searchedNodes = 0;
         let totalNodes = 0;
 
-        // 递归搜索函数
+        // Recursive search helper
         const searchRecursive = async (nodeId: string, path: string = '', nodeIdPath: string[] = [], depth: number = 0): Promise<void> => {
-            // 检查取消标志
+            // Respect cancellation request
             if (cancellationToken?.isCancellationRequested) {
                 return;
             }
 
-            // 限制搜索深度以避免无限递归
+            // Prevent runaway recursion depth
             if (depth > 20) {
                 return;
             }
 
             try {
-                // 浏览当前节点的子节点
+                // Browse child references for current node
                 const references = await this.browse(nodeId);
                 totalNodes += references.length;
 
@@ -670,12 +773,12 @@ export class OpcuaClient {
                     const currentPath = path ? `${path} > ${displayName}` : displayName;
                     const currentNodeIdPath = [...nodeIdPath, ref.nodeId.toString()];
 
-                    // 报告进度
+                    // Report progress
                     if (progressCallback) {
                         progressCallback(searchedNodes, totalNodes);
                     }
 
-                    // 检查是否匹配搜索词
+                    // Match against search term
                     if (
                         displayName.toLowerCase().includes(searchTermLower) ||
                         browseName.toLowerCase().includes(searchTermLower)
@@ -690,19 +793,19 @@ export class OpcuaClient {
                         });
                     }
 
-                    // 如果是对象类型，继续递归搜索
+                    // Continue recursion for object nodes
                     if (ref.nodeClass === NodeClass.Object) {
                         await searchRecursive(ref.nodeId.toString(), currentPath, currentNodeIdPath, depth + 1);
                     }
                 }
             } catch (error) {
-                // 忽略单个节点的错误，继续搜索
+                // Ignore individual node errors and continue
                 console.error(`Error searching node ${nodeId}:`, error);
             }
         };
 
         try {
-            // 从根节点开始搜索
+            // Start search from root node
             await searchRecursive('RootFolder', '');
         } catch (error) {
             console.error('Error in search:', error);
