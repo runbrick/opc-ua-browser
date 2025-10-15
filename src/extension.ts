@@ -36,7 +36,7 @@ export function activate(context: vscode.ExtensionContext) {
     const addConnectionCmd = vscode.commands.registerCommand(
         'opcua.addConnection',
         async () => {
-            await addConnectionCommand(connectionManager, treeDataProvider);
+            await addConnectionCommand(context.extensionUri, connectionManager, treeDataProvider);
         }
     );
 
@@ -94,7 +94,7 @@ export function activate(context: vscode.ExtensionContext) {
     const editConnectionCmd = vscode.commands.registerCommand(
         'opcua.editConnection',
         async (node) => {
-            await editConnectionCommand(connectionManager, treeDataProvider, node);
+            await editConnectionCommand(context.extensionUri, connectionManager, treeDataProvider, node);
         }
     );
 
