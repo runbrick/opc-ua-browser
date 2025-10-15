@@ -3,7 +3,12 @@
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
   "icon": "resources/opcua-icon.png",
-  "version": "0.1.2",
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/runbrick/opc-client.git"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },

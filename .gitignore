@@ -7,3 +7,4 @@ dist
 .claude
 opcua-browser-*.vsix
 .codex
+.vscode
