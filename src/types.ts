@@ -28,11 +28,22 @@ export interface OpcuaNodeInfo {
 
 export interface OpcuaReference {
     referenceTypeId: string;
-    isForward: boolean;
+   isForward: boolean;
     nodeId: string;
     browseName: string;
     displayName: string;
     nodeClass: string;
+}
+
+export interface SearchResultItem {
+    connectionId: string;
+    connectionName: string;
+    nodeId: string;
+    displayName: string;
+    browseName: string;
+    nodeClass: string;
+    path: string;
+    nodeIdPath: string[];
 }
 
 export enum ConnectionStatus {

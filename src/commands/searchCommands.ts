@@ -3,16 +3,17 @@ import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaClient } from '../opcua/opcuaClient';
 import { OpcuaTreeDataProvider, OpcuaNode, ConnectionNode, TreeNode } from '../providers/opcuaTreeDataProvider';
 import { isNodeIdPattern, normalizeNodeIdInput } from '../utils/nodeIdUtils';
-import { SearchResultItem, SearchResultsPanel } from '../webview/SearchResultsPanel';
-
-interface NodeSearchResult {
-    nodeId: string;
-    displayName: string;
-    browseName: string;
-    nodeClass: string;
-    path: string;
-    nodeIdPath: string[];
-}
+import { SearchResultItem } from '../types';
+import {
+    SearchPanel,
+    SearchPanelConfig,
+    SearchHandler,
+    SearchHandlerResult,
+    SearchRequest,
+    SearchProgressUpdate,
+    SearchMessage,
+    SearchScope
+} from '../webview/SearchPanel';
 
 type SearchResult = SearchResultItem;
 
@@ -22,73 +23,24 @@ export async function searchNodeCommand(
     treeView: vscode.TreeView<any>,
     extensionUri: vscode.Uri
 ): Promise<void> {
-    const connections = connectionManager.getAllConnections();
-    if (connections.size === 0) {
-        vscode.window.showWarningMessage('No OPC UA connections available');
-        return;
-    }
-
-    const connectedConnections = Array.from(connections.entries()).filter(
-        ([, client]) => client.isConnected
-    );
-
+    const connectedConnections = getConnectedConnections(connectionManager);
     if (connectedConnections.length === 0) {
         vscode.window.showWarningMessage('Please connect to at least one OPC UA server first');
         return;
     }
 
-    const searchTerm = await promptSearchTerm();
-    if (!searchTerm) {
-        return;
-    }
+    const revealResult = createRevealCallback(treeView, treeDataProvider, connectionManager);
+    const handler = createSearchHandler(connectionManager);
+    const panelConfig = buildSearchPanelConfig(connectionManager, connectedConnections, {
+        allowAllOption: true,
+        defaultScope: 'all'
+    });
 
-    const searchScope = await vscode.window.showQuickPick(
-        [
-            { label: 'All Connected Servers', value: 'all' },
-            { label: 'Select Specific Server', value: 'specific' }
-        ],
-        { placeHolder: 'Select search scope' }
-    );
-
-    if (!searchScope) {
-        return;
-    }
-
-    let connectionsToSearch: Array<[string, OpcuaClient]> = [];
-
-    if (searchScope.value === 'all') {
-        connectionsToSearch = connectedConnections;
-    } else {
-        const connectionItems = connectedConnections.map(([id]) => {
-            const config = connectionManager.getConnectionConfig(id);
-            return {
-                label: config?.name || config?.endpointUrl || id,
-                description: config?.endpointUrl,
-                connectionId: id
-            };
-        });
-
-        const selectedConnection = await vscode.window.showQuickPick(connectionItems, {
-            placeHolder: 'Select server to search'
-        });
-
-        if (!selectedConnection) {
-            return;
-        }
-
-        const connection = connectedConnections.find(([id]) => id === selectedConnection.connectionId);
-        if (connection) {
-            connectionsToSearch = [connection];
-        }
-    }
-
-    await executeSearch(
-        searchTerm,
-        connectionsToSearch,
-        connectionManager,
-        treeDataProvider,
-        treeView,
-        extensionUri
+    SearchPanel.show(
+        extensionUri,
+        panelConfig,
+        handler,
+        revealResult
     );
 }
 
@@ -114,271 +66,316 @@ export async function searchNodeInConnectionCommand(
         return;
     }
 
-    const searchTerm = await promptSearchTerm();
-    if (!searchTerm) {
-        return;
-    }
+    const revealResult = createRevealCallback(treeView, treeDataProvider, connectionManager);
+    const handler = createSearchHandler(connectionManager, { forcedConnectionId: node.connectionId });
+    const panelConfig = buildSearchPanelConfig(connectionManager, [[node.connectionId, client]], {
+        allowAllOption: false,
+        defaultScope: 'connection',
+        defaultConnectionId: node.connectionId
+    });
 
-    await executeSearch(
-        searchTerm,
-        [[node.connectionId, client]],
-        connectionManager,
-        treeDataProvider,
-        treeView,
-        extensionUri
+    SearchPanel.show(extensionUri, panelConfig, handler, revealResult);
+}
+
+function createRevealCallback(
+    treeView: vscode.TreeView<any>,
+    treeDataProvider: OpcuaTreeDataProvider,
+    connectionManager: ConnectionManager
+): (result: SearchResultItem, options?: { allowErrorMessage?: boolean }) => Promise<void> {
+    return async (result, options) =>
+        openSearchResult(result, treeView, treeDataProvider, connectionManager, options);
+}
+
+function createSearchHandler(
+    connectionManager: ConnectionManager,
+    options?: { forcedConnectionId?: string }
+): SearchHandler {
+    return async (
+        request: SearchRequest,
+        token: vscode.CancellationToken,
+        reportProgress: (update: SearchProgressUpdate) => void
+    ): Promise<SearchHandlerResult> => {
+        const connectedConnections = getConnectedConnections(connectionManager);
+
+        if (connectedConnections.length === 0) {
+            return {
+                results: [],
+                searchedNodes: 0,
+                messages: [{ type: 'warning', text: 'No connected OPC UA servers available.' }]
+            };
+        }
+
+        let connectionsToSearch: Array<[string, OpcuaClient]> = [];
+
+        if (options?.forcedConnectionId) {
+            const forced = connectedConnections.find(([id]) => id === options.forcedConnectionId);
+            if (!forced) {
+                return {
+                    results: [],
+                    searchedNodes: 0,
+                    messages: [{ type: 'warning', text: 'Selected server is not connected.' }]
+                };
+            }
+            connectionsToSearch = [forced];
+        } else if (request.scope === 'connection' && request.connectionId) {
+            const selected = connectedConnections.find(([id]) => id === request.connectionId);
+            if (!selected) {
+                return {
+                    results: [],
+                    searchedNodes: 0,
+                    messages: [{ type: 'warning', text: 'Selected server is not connected.' }]
+                };
+            }
+            connectionsToSearch = [selected];
+        } else {
+            connectionsToSearch = connectedConnections;
+        }
+
+        return performSearchRequest(
+            request.searchTerm,
+            connectionsToSearch,
+            connectionManager,
+            token,
+            reportProgress
+        );
+    };
+}
+
+function getConnectedConnections(connectionManager: ConnectionManager): Array<[string, OpcuaClient]> {
+    return Array.from(connectionManager.getAllConnections().entries()).filter(
+        ([, client]) => client.isConnected
     );
 }
 
-async function promptSearchTerm(): Promise<string | undefined> {
-    const searchTerm = await vscode.window.showInputBox({
-        prompt: 'Enter search term (node name or NodeId)',
-        placeHolder: 'e.g., Temperature, Pressure, ns=2;s=MyTag',
-        validateInput: (value) => {
-            if (!value || value.trim().length === 0) {
-                return 'Search term cannot be empty';
-            }
-            return null;
-        }
-    });
-
-    if (!searchTerm) {
-        return undefined;
-    }
-
-    return searchTerm.trim();
-}
-
-async function executeSearch(
+async function performSearchRequest(
     searchTerm: string,
     connectionsToSearch: Array<[string, OpcuaClient]>,
     connectionManager: ConnectionManager,
-    treeDataProvider: OpcuaTreeDataProvider,
-    treeView: vscode.TreeView<any>,
-    extensionUri: vscode.Uri
-): Promise<void> {
+    token: vscode.CancellationToken,
+    reportProgress: (update: SearchProgressUpdate) => void
+): Promise<SearchHandlerResult> {
+    const trimmed = searchTerm.trim();
+
+    if (!trimmed) {
+        return {
+            results: [],
+            searchedNodes: 0,
+            messages: [{ type: 'error', text: 'Search term cannot be empty.' }]
+        };
+    }
+
     if (connectionsToSearch.length === 0) {
-        vscode.window.showWarningMessage('No connected OPC UA servers available for search');
-        return;
+        return {
+            results: [],
+            searchedNodes: 0,
+            messages: [{ type: 'warning', text: 'No connected OPC UA servers available.' }]
+        };
     }
 
-    const trimmedSearchTerm = searchTerm.trim();
-    if (isNodeIdPattern(trimmedSearchTerm)) {
-        const handled = await handleDirectNodeIdSearch(
-            trimmedSearchTerm,
-            connectionsToSearch,
-            connectionManager,
-            treeDataProvider,
-            treeView,
-            extensionUri
-        );
-        if (handled) {
-            return;
-        }
+    if (isNodeIdPattern(trimmed)) {
+        return performNodeIdSearch(trimmed, connectionsToSearch, connectionManager, token, reportProgress);
     }
 
-    await vscode.window.withProgress(
-        {
-            location: vscode.ProgressLocation.Notification,
-            title: `Searching for "${searchTerm}"`,
-            cancellable: true
-        },
-        async (progress, token) => {
-            const results: SearchResult[] = [];
-            let searchedNodes = 0;
-
-            for (const [connectionId, client] of connectionsToSearch) {
-                if (token.isCancellationRequested) {
-                    break;
-                }
-
-                const config = connectionManager.getConnectionConfig(connectionId);
-                const connectionName = config?.name || config?.endpointUrl || connectionId;
-                let previousCount = 0;
-
-                progress.report({
-                    message: `Searching in ${connectionName}...`
-                });
-
-                try {
-                    const searchResults = await client.searchNodes(
-                        searchTerm,
-                        (current: number, total: number) => {
-                            const increment = current - previousCount;
-                            if (increment > 0) {
-                                searchedNodes += increment;
-                            }
-                            previousCount = current;
-
-                            const totalLabel = total > 0 ? ` (${current}/${total} nodes)` : '';
-                            progress.report({
-                                message: `Searching in ${connectionName}...${totalLabel}`
-                            });
-                        },
-                        token
-                    );
-
-                    results.push(...searchResults.map((r: NodeSearchResult): SearchResult => ({
-                        ...r,
-                        connectionId,
-                        connectionName
-                    })));
-                } catch (error) {
-                    console.error(`Error searching in connection ${connectionId}:`, error);
-                    vscode.window.showErrorMessage(
-                        `Error searching in ${connectionName}: ${error instanceof Error ? error.message : 'Unknown error'}`
-                    );
-                }
-            }
-
-            if (token.isCancellationRequested) {
-                vscode.window.showInformationMessage('Search cancelled');
-                return;
-            }
-
-            if (results.length === 0) {
-                vscode.window.showInformationMessage(
-                    `No nodes found matching "${searchTerm}" (searched ${searchedNodes} nodes)`
-                );
-                return;
-            }
-
-            SearchResultsPanel.show(
-                extensionUri,
-                {
-                    searchTerm,
-                    searchedNodes,
-                    results
-                },
-                async (result) => {
-                    await openSearchResult(
-                        result,
-                        treeView,
-                        treeDataProvider,
-                        connectionManager,
-                        true
-                    );
-                }
-            );
-        }
-    );
+    return performNameSearch(trimmed, connectionsToSearch, connectionManager, token, reportProgress);
 }
 
-async function handleDirectNodeIdSearch(
+async function performNameSearch(
+    searchTerm: string,
+    connectionsToSearch: Array<[string, OpcuaClient]>,
+    connectionManager: ConnectionManager,
+    token: vscode.CancellationToken,
+    reportProgress: (update: SearchProgressUpdate) => void
+): Promise<SearchHandlerResult> {
+    const results: SearchResult[] = [];
+    const messages: SearchMessage[] = [];
+    let searchedNodes = 0;
+
+    for (const [connectionId, client] of connectionsToSearch) {
+        if (token.isCancellationRequested) {
+            messages.push({ type: 'info', text: 'Search cancelled.' });
+            break;
+        }
+
+        const connectionName = getConnectionName(connectionManager, connectionId);
+        let previousCount = 0;
+
+        reportProgress({
+            connectionId,
+            connectionName,
+            current: 0,
+            total: 0,
+            message: `Searching in ${connectionName}...`
+        });
+
+        try {
+            const searchResults = await client.searchNodes(
+                searchTerm,
+                (current: number, total: number) => {
+                    const increment = Math.max(0, current - previousCount);
+                    if (increment > 0) {
+                        searchedNodes += increment;
+                        previousCount = current;
+                    }
+
+                    reportProgress({
+                        connectionId,
+                        connectionName,
+                        current,
+                        total
+                    });
+                },
+                token
+            );
+
+            results.push(
+                ...searchResults.map(
+                    (result): SearchResult => ({
+                        ...result,
+                        connectionId,
+                        connectionName
+                    })
+                )
+            );
+        } catch (error) {
+            console.error(`Error searching in connection ${connectionId}:`, error);
+            messages.push({
+                type: 'error',
+                text: `Error searching in ${connectionName}: ${
+                    error instanceof Error ? error.message : 'Unknown error'
+                }`
+            });
+        }
+    }
+
+    if (!token.isCancellationRequested && results.length === 0) {
+        messages.push({
+            type: 'info',
+            text: `No nodes found matching "${searchTerm}".`
+        });
+    }
+
+    return {
+        results,
+        searchedNodes,
+        messages
+    };
+}
+
+async function performNodeIdSearch(
     nodeIdInput: string,
     connectionsToSearch: Array<[string, OpcuaClient]>,
     connectionManager: ConnectionManager,
-    treeDataProvider: OpcuaTreeDataProvider,
-    treeView: vscode.TreeView<any>,
-    extensionUri: vscode.Uri
-): Promise<boolean> {
-    if (connectionsToSearch.length === 0) {
-        return true;
-    }
-
+    token: vscode.CancellationToken,
+    reportProgress: (update: SearchProgressUpdate) => void
+): Promise<SearchHandlerResult> {
     const normalizedNodeId = normalizeNodeIdInput(nodeIdInput);
     const results: SearchResult[] = [];
-    let wasCancelled = false;
+    const messages: SearchMessage[] = [];
 
-    await vscode.window.withProgress(
-        {
-            location: vscode.ProgressLocation.Notification,
-            title: `Locating node ${normalizedNodeId}`,
-            cancellable: true
-        },
-        async (progress, token) => {
-            for (const [connectionId, client] of connectionsToSearch) {
-                if (token.isCancellationRequested) {
-                    wasCancelled = true;
-                    break;
-                }
-
-                const config = connectionManager.getConnectionConfig(connectionId);
-                const connectionName = config?.name || config?.endpointUrl || connectionId;
-
-                progress.report({
-                    message: `Checking ${connectionName}...`
-                });
-
-                try {
-                    const located = await client.findNodePathByNodeId(normalizedNodeId, {
-                        maxDepth: 25,
-                        cancellationToken: token
-                    });
-
-                    if (located) {
-                        results.push({
-                            nodeId: normalizedNodeId,
-                            displayName: located.displayName || normalizedNodeId,
-                            browseName: located.browseName || '',
-                            nodeClass: located.nodeClass,
-                            path: located.path,
-                            nodeIdPath: located.nodeIdPath,
-                            connectionId,
-                            connectionName
-                        });
-                        continue;
-                    }
-
-                    const nodeInfo = await client.readNodeAttributes(normalizedNodeId);
-                    const displayName = nodeInfo.displayName || nodeInfo.browseName || normalizedNodeId;
-
-                    results.push({
-                        nodeId: normalizedNodeId,
-                        displayName,
-                        browseName: nodeInfo.browseName || '',
-                        nodeClass: nodeInfo.nodeClass,
-                        path: displayName,
-                        nodeIdPath: [],
-                        connectionId,
-                        connectionName
-                    });
-                } catch (error) {
-                    console.warn(`Node ${normalizedNodeId} not found in ${connectionName}:`, error);
-                }
-            }
+    for (const [connectionId, client] of connectionsToSearch) {
+        if (token.isCancellationRequested) {
+            break;
         }
-    );
 
-    if (wasCancelled) {
-        vscode.window.showInformationMessage('Node search cancelled');
-        return true;
+        const connectionName = getConnectionName(connectionManager, connectionId);
+
+        reportProgress({
+            connectionId,
+            connectionName,
+            current: 0,
+            total: 0,
+            message: `Checking ${connectionName}...`
+        });
+
+        try {
+            const located = await client.findNodePathByNodeId(normalizedNodeId, {
+                maxDepth: 25,
+                cancellationToken: token
+            });
+
+            if (located) {
+                results.push({
+                    nodeId: normalizedNodeId,
+                    displayName: located.displayName || normalizedNodeId,
+                    browseName: located.browseName || '',
+                    nodeClass: located.nodeClass,
+                    path: located.path,
+                    nodeIdPath: located.nodeIdPath,
+                    connectionId,
+                    connectionName
+                });
+                continue;
+            }
+
+            const nodeInfo = await client.readNodeAttributes(normalizedNodeId);
+            const displayName = nodeInfo.displayName || nodeInfo.browseName || normalizedNodeId;
+
+            results.push({
+                nodeId: normalizedNodeId,
+                displayName,
+                browseName: nodeInfo.browseName || '',
+                nodeClass: nodeInfo.nodeClass,
+                path: displayName,
+                nodeIdPath: [],
+                connectionId,
+                connectionName
+            });
+        } catch (error) {
+            if (error instanceof Error && error.message.includes('BadNodeIdUnknown')) {
+                continue;
+            }
+            console.warn(`Node ${normalizedNodeId} not found in ${connectionName}:`, error);
+        }
+    }
+
+    if (token.isCancellationRequested) {
+        messages.push({ type: 'info', text: 'Node search cancelled.' });
     }
 
     if (results.length === 0) {
-        vscode.window.showInformationMessage(`Node ${normalizedNodeId} was not found in the selected servers.`);
-        return true;
+        messages.push({
+            type: 'info',
+            text: `Node ${normalizedNodeId} was not found in the selected servers.`
+        });
     }
 
-    if (results.length === 1) {
-        await openSearchResult(
-            results[0],
-            treeView,
-            treeDataProvider,
-            connectionManager,
-            false
-        );
-        return true;
+    return {
+        results,
+        searchedNodes: connectionsToSearch.length,
+        messages,
+        autoRevealIndex: results.length === 1 ? 0 : undefined
+    };
+}
+
+function buildSearchPanelConfig(
+    connectionManager: ConnectionManager,
+    connections: Array<[string, OpcuaClient]>,
+    options: {
+        allowAllOption: boolean;
+        defaultScope: SearchScope;
+        defaultConnectionId?: string;
+        defaultSearchTerm?: string;
     }
+): SearchPanelConfig {
+    return {
+        connections: connections.map(([id]) => {
+            const config = connectionManager.getConnectionConfig(id);
+            return {
+                id,
+                name: config?.name || config?.endpointUrl || id,
+                endpointUrl: config?.endpointUrl
+            };
+        }),
+        allowAllOption: options.allowAllOption,
+        defaultScope: options.defaultScope,
+        defaultConnectionId: options.defaultConnectionId,
+        defaultSearchTerm: options.defaultSearchTerm
+    };
+}
 
-    SearchResultsPanel.show(
-        extensionUri,
-        {
-            searchTerm: normalizedNodeId,
-            searchedNodes: connectionsToSearch.length,
-            results
-        },
-        async (result) => {
-            await openSearchResult(
-                result,
-                treeView,
-                treeDataProvider,
-                connectionManager,
-                false
-            );
-        }
-    );
-
-    return true;
+function getConnectionName(connectionManager: ConnectionManager, connectionId: string): string {
+    const config = connectionManager.getConnectionConfig(connectionId);
+    return config?.name || config?.endpointUrl || connectionId;
 }
 
 async function openSearchResult(
@@ -386,8 +383,9 @@ async function openSearchResult(
     treeView: vscode.TreeView<any>,
     treeDataProvider: OpcuaTreeDataProvider,
     connectionManager: ConnectionManager,
-    allowErrorMessage: boolean
+    options?: { allowErrorMessage?: boolean }
 ): Promise<void> {
+    const allowErrorMessage = options?.allowErrorMessage ?? true;
     try {
         if (result.nodeIdPath.length > 0) {
             await revealNodeInTree(
