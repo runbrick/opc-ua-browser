@@ -3,6 +3,7 @@ import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaNodeInfo, OpcuaReference } from '../types';
 import type { VariableNodeCollectionResult } from '../opcua/opcuaClient';
 import { formatDataType } from '../utils/dataTypeMapper';
+import { exportVariableRowsToExcel, type VariableNodeExportRow } from '../utils/excelExporter';
 
 export class NodeDetailPanel {
     private static currentPanel: NodeDetailPanel | undefined;
@@ -11,6 +12,7 @@ export class NodeDetailPanel {
     private currentConnectionId: string | undefined;
     private currentNodeId: string | undefined;
     private isRefreshing = false;
+    private currentNodeLabel: string | undefined;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -31,6 +33,9 @@ export class NodeDetailPanel {
                         if (typeof message.nodeId === 'string') {
                             await this.handleOpenVariableNode(message.nodeId);
                         }
+                        break;
+                    case 'exportVariableNodes':
+                        await this.handleExportVariableNodes(message);
                         break;
                 }
             },
@@ -103,6 +108,8 @@ export class NodeDetailPanel {
                 }
             }
             const enrichedNodeInfo = this.enrichNodeInfo(nodeInfo);
+            this.currentNodeLabel =
+                nodeInfo.displayName || nodeInfo.browseName || nodeInfo.nodeId || this.currentNodeId;
 
             this.panel.webview.html = this.getHtml(enrichedNodeInfo, references, variableDescendants);
         } catch (error) {
@@ -162,6 +169,119 @@ export class NodeDetailPanel {
             const message = error instanceof Error ? error.message : String(error);
             void vscode.window.showErrorMessage(`Failed to open variable node: ${message}`);
         }
+    }
+
+    private async handleExportVariableNodes(message: {
+        nodes?: Array<{ nodeId?: string; displayName?: string; browseName?: string; dataType?: string }>;
+        filterText?: string;
+        totalCount?: number;
+    }): Promise<void> {
+        if (!this.currentConnectionId) {
+            void vscode.window.showWarningMessage('Unable to export variables: no active connection.');
+            return;
+        }
+
+        const rawNodes = Array.isArray(message?.nodes) ? message.nodes : [];
+        if (!rawNodes.length) {
+            void vscode.window.showInformationMessage('No variables available to export for this view.');
+            return;
+        }
+
+        const rows: VariableNodeExportRow[] = rawNodes.map((node) => ({
+            NodeId: typeof node.nodeId === 'string' ? node.nodeId : '',
+            DisplayName: typeof node.displayName === 'string' ? node.displayName : '',
+            BrowseName: typeof node.browseName === 'string' ? node.browseName : '',
+            DataType: typeof node.dataType === 'string' ? formatDataType(node.dataType) || node.dataType : ''
+        }));
+
+        const exportLabel = this.currentNodeLabel || this.currentNodeId || 'variables';
+        const defaultFilename = `${this.sanitizeFilenameComponent(exportLabel)}_variables.xlsx`;
+        const defaultUri = vscode.Uri.file(defaultFilename);
+
+        const saveUri = await vscode.window.showSaveDialog({
+            defaultUri,
+            filters: {
+                'Excel Files': ['xlsx'],
+                'All Files': ['*']
+            }
+        });
+
+        if (!saveUri) {
+            return;
+        }
+
+        const summaryRows = this.buildExportSummary(
+            rows.length,
+            typeof message.totalCount === 'number' ? message.totalCount : undefined,
+            message.filterText
+        );
+
+        try {
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `Exporting ${rows.length} variable nodes to Excel...`
+                },
+                async (progress) => {
+                    progress.report({ message: 'Writing Excel file...' });
+                    await exportVariableRowsToExcel(rows, saveUri.fsPath, {
+                        sheetName: exportLabel.substring(0, 31),
+                        summary: summaryRows
+                    });
+                }
+            );
+
+            vscode.window.setStatusBarMessage(`$(check) Export saved: ${saveUri.fsPath}`, 5000);
+            void vscode.window.showInformationMessage('Variable descendants exported to Excel.', {
+                detail: saveUri.fsPath
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showErrorMessage(`Failed to export variable nodes: ${message}`);
+        }
+    }
+
+    private sanitizeFilenameComponent(value: string): string {
+        const sanitized = value.replace(/[\\/:*?"<>|]+/g, '_').trim();
+        return sanitized.length > 0 ? sanitized : 'variables';
+    }
+
+    private buildExportSummary(
+        exportedCount: number,
+        totalCount?: number,
+        filterText?: string
+    ): Array<{ Property: string; Value: string | number | undefined }> {
+        const summary: Array<{ Property: string; Value: string | number | undefined }> = [
+            { Property: 'Exported Variable Nodes', Value: exportedCount }
+        ];
+
+        if (typeof totalCount === 'number') {
+            summary.push({ Property: 'Total Available Nodes', Value: totalCount });
+        }
+
+        if (filterText && filterText.trim().length > 0) {
+            summary.push({ Property: 'Filter Applied', Value: filterText.trim() });
+        }
+
+        if (this.currentNodeLabel) {
+            summary.push({ Property: 'Parent Node', Value: this.currentNodeLabel });
+        }
+        if (this.currentNodeId) {
+            summary.push({ Property: 'Parent NodeId', Value: this.currentNodeId });
+        }
+
+        const connectionConfig = this.currentConnectionId
+            ? this.connectionManager.getConnectionConfig(this.currentConnectionId)
+            : undefined;
+        if (connectionConfig?.name) {
+            summary.push({ Property: 'Connection', Value: connectionConfig.name });
+        } else if (connectionConfig?.endpointUrl) {
+            summary.push({ Property: 'Connection Endpoint', Value: connectionConfig.endpointUrl });
+        }
+
+        summary.push({ Property: 'Export Date', Value: new Date().toISOString() });
+
+        return summary;
     }
 
     private enrichNodeInfo(
@@ -517,8 +637,12 @@ export class NodeDetailPanel {
         const variablesTabButton = document.getElementById('variables-tab-button');
         const variablesContainerEl = document.getElementById('variables-container');
         const variablesCountEl = document.getElementById('variables-count');
-        const variablesSearchInput = document.getElementById('variables-search');
-        const variablesExportButton = document.getElementById('variables-export');
+        const variablesSearchInputEl = document.getElementById('variables-search');
+        const variablesSearchInput =
+            variablesSearchInputEl instanceof HTMLInputElement ? variablesSearchInputEl : null;
+        const variablesExportButtonEl = document.getElementById('variables-export');
+        const variablesExportButton =
+            variablesExportButtonEl instanceof HTMLButtonElement ? variablesExportButtonEl : null;
         const variablesNoteEl = document.getElementById('variables-note');
         const tabButtons = Array.prototype.slice.call(document.querySelectorAll('.tab-button'));
         const tabContents = Array.prototype.slice.call(document.querySelectorAll('.tab-content'));
@@ -763,46 +887,19 @@ export class NodeDetailPanel {
         }
 
         function exportVariablesToExcel() {
-            if (!filteredVariableNodes.length) {
-                return;
-            }
+            const payloadNodes = filteredVariableNodes.map((variable) => ({
+                nodeId: variable.nodeId || '',
+                displayName: variable.displayName || '',
+                browseName: variable.browseName || '',
+                dataType: variable.dataType || ''
+            }));
 
-            const headerRow =
-                '<tr>' +
-                '<th>Node ID</th>' +
-                '<th>Display Name</th>' +
-                '<th>Browse Name</th>' +
-                '</tr>';
-
-            const dataRows = filteredVariableNodes
-                .map((variable) => {
-                    const nodeId = escapeHtml(variable.nodeId || '');
-                    const displayName = escapeHtml(variable.displayName || '');
-                    const browseName = escapeHtml(variable.browseName || '');
-                    return (
-                        '<tr>' +
-                        '<td>' + nodeId + '</td>' +
-                        '<td>' + displayName + '</td>' +
-                        '<td>' + browseName + '</td>' +
-                        '</tr>'
-                    );
-                })
-                .join('');
-
-            const tableHtml = '<table>' + headerRow + dataRows + '</table>';
-            const htmlContent = '<html><head><meta charset="UTF-8"></head><body>' + tableHtml + '</body></html>';
-            const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/vnd.ms-excel' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            const titleEl = document.getElementById('node-title');
-            const baseName = titleEl && titleEl.textContent ? titleEl.textContent.trim() : 'variables';
-            const sanitizedName = baseName.replace(/[\\/:*?"<>|]+/g, '_') || 'variables';
-            link.href = url;
-            link.download = sanitizedName + '_variables.xls';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            setTimeout(() => URL.revokeObjectURL(url), 0);
+            vscode.postMessage({
+                command: 'exportVariableNodes',
+                nodes: payloadNodes,
+                totalCount: variableNodes.length,
+                filterText: variablesSearchInput?.value ?? ''
+            });
         }
 
         function initializeVariableSection() {
@@ -825,9 +922,8 @@ export class NodeDetailPanel {
             renderVariableList();
 
             if (variablesSearchInput) {
-                variablesSearchInput.addEventListener('input', (event) => {
-                    const term = event.target && typeof event.target.value === 'string' ? event.target.value : '';
-                    applyVariableFilter(term);
+                variablesSearchInput.addEventListener('input', () => {
+                    applyVariableFilter(variablesSearchInput.value);
                 });
             }
 
