@@ -1,9 +1,14 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../opcua/connectionManager';
-import { OpcuaNodeInfo, OpcuaReference } from '../types';
+import { OpcuaNodeInfo, OpcuaReference, OpcuaNodePathSegment } from '../types';
 import type { VariableNodeCollectionResult } from '../opcua/opcuaClient';
 import { formatDataType } from '../utils/dataTypeMapper';
 import { exportVariableRowsToExcel, type VariableNodeExportRow } from '../utils/excelExporter';
+
+type HierarchySegment = OpcuaNodePathSegment & {
+    isRoot?: boolean;
+    isCurrent?: boolean;
+};
 
 export class NodeDetailPanel {
     private static currentPanel: NodeDetailPanel | undefined;
@@ -13,6 +18,7 @@ export class NodeDetailPanel {
     private currentNodeId: string | undefined;
     private isRefreshing = false;
     private currentNodeLabel: string | undefined;
+    private currentHierarchySegments: HierarchySegment[] = [];
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -82,6 +88,7 @@ export class NodeDetailPanel {
         this.currentConnectionId = connectionId;
         this.currentNodeId = nodeId;
         this.isRefreshing = false;
+        this.currentHierarchySegments = [];
 
         try {
             const client = this.connectionManager.getConnection(connectionId);
@@ -93,6 +100,7 @@ export class NodeDetailPanel {
             const nodeInfo = await client.readNodeAttributes(nodeId);
             const references = await client.getReferences(nodeId);
             let variableDescendants: VariableNodeCollectionResult | undefined;
+            let hierarchySegments: HierarchySegment[] = [];
 
             if (nodeInfo.nodeClass === 'Object') {
                 try {
@@ -107,11 +115,27 @@ export class NodeDetailPanel {
                     };
                 }
             }
+
             const enrichedNodeInfo = this.enrichNodeInfo(nodeInfo);
             this.currentNodeLabel =
                 nodeInfo.displayName || nodeInfo.browseName || nodeInfo.nodeId || this.currentNodeId;
+            try {
+                const pathInfo = await client.findNodePathByNodeId(nodeId, { maxDepth: 50 });
+                const pathSegments = pathInfo?.pathSegments ?? [];
+                hierarchySegments = this.buildHierarchySegments(pathSegments, enrichedNodeInfo);
+            } catch (error) {
+                console.error('Failed to resolve node hierarchy path:', error);
+                hierarchySegments = this.buildHierarchySegments([], enrichedNodeInfo);
+            }
 
-            this.panel.webview.html = this.getHtml(enrichedNodeInfo, references, variableDescendants);
+            this.currentHierarchySegments = hierarchySegments;
+
+            this.panel.webview.html = this.getHtml(
+                enrichedNodeInfo,
+                references,
+                variableDescendants,
+                hierarchySegments
+            );
         } catch (error) {
             this.panel.webview.html = this.getErrorHtml(`Error loading node details: ${error}`);
         }
@@ -284,6 +308,58 @@ export class NodeDetailPanel {
         return summary;
     }
 
+    private buildHierarchySegments(
+        segments: OpcuaNodePathSegment[],
+        fallbackNode?: OpcuaNodeInfo
+    ): HierarchySegment[] {
+        if (!Array.isArray(segments) || segments.length === 0) {
+            if (!fallbackNode) {
+                return [];
+            }
+
+            const label =
+                fallbackNode.displayName ||
+                fallbackNode.browseName ||
+                fallbackNode.nodeId;
+
+            return [
+                {
+                    nodeId: fallbackNode.nodeId,
+                    displayName: label,
+                    browseName: fallbackNode.browseName,
+                    nodeClass: fallbackNode.nodeClass,
+                    isCurrent: true
+                }
+            ];
+        }
+
+        const decorated: HierarchySegment[] = [
+            {
+                nodeId: 'RootFolder',
+                displayName: 'Root',
+                browseName: 'RootFolder',
+                nodeClass: 'Object',
+                isRoot: true,
+                isCurrent: false
+            }
+        ];
+
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            decorated.push({
+                nodeId: segment.nodeId,
+                displayName: segment.displayName || segment.browseName || segment.nodeId,
+                browseName: segment.browseName,
+                nodeClass: segment.nodeClass,
+                isCurrent: i === segments.length - 1
+            });
+        }
+
+        decorated[decorated.length - 1].isCurrent = true;
+
+        return decorated;
+    }
+
     private enrichNodeInfo(
         nodeInfo: OpcuaNodeInfo
     ): OpcuaNodeInfo & { formattedDataType?: string } {
@@ -300,7 +376,8 @@ export class NodeDetailPanel {
     private getHtml(
         nodeInfo: OpcuaNodeInfo & { formattedDataType?: string },
         references: OpcuaReference[],
-        variableDescendants?: VariableNodeCollectionResult
+        variableDescendants: VariableNodeCollectionResult | undefined,
+        hierarchySegments: HierarchySegment[]
     ): string {
         const nonce = this.getNonce();
         const nodeInfoJson = this.serializeForWebview(nodeInfo);
@@ -308,6 +385,7 @@ export class NodeDetailPanel {
         const variableDescendantsJson = variableDescendants
             ? this.serializeForWebview(variableDescendants)
             : 'null';
+        const hierarchyJson = this.serializeForWebview(hierarchySegments);
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -442,6 +520,50 @@ export class NodeDetailPanel {
             margin-bottom: 10px;
         }
 
+        .hierarchy-breadcrumb {
+            margin: 0 0 16px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            font-size: 0.95em;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .hierarchy-segment {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .hierarchy-link {
+            background: none;
+            border: none;
+            color: var(--vscode-textLink-foreground);
+            cursor: pointer;
+            padding: 0;
+            font: inherit;
+            text-decoration: underline;
+        }
+
+        .hierarchy-link:hover {
+            color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+        }
+
+        .hierarchy-current {
+            font-weight: 600;
+            color: var(--vscode-foreground);
+        }
+
+        .hierarchy-divider {
+            opacity: 0.6;
+            font-size: 0.85em;
+        }
+
+        .hierarchy-empty {
+            font-style: italic;
+        }
+
         .tab-container {
             margin-top: 20px;
         }
@@ -504,6 +626,7 @@ export class NodeDetailPanel {
 </head>
 <body>
     <h1 id="node-title"></h1>
+    <nav id="node-hierarchy" class="hierarchy-breadcrumb" aria-label="Node hierarchy"></nav>
 
     <div class="tab-container">
         <div class="tab-buttons">
@@ -630,8 +753,10 @@ export class NodeDetailPanel {
         const initialNodeInfo = ${nodeInfoJson};
         const initialReferences = ${referencesJson};
         const initialVariableDescendants = ${variableDescendantsJson};
+        const initialHierarchy = ${hierarchyJson};
         let refreshTimer;
 
+        const hierarchyContainer = document.getElementById('node-hierarchy');
         const statusMessageEl = document.getElementById('status-message');
         const variablesTabEl = document.getElementById('variables-tab');
         const variablesTabButton = document.getElementById('variables-tab-button');
@@ -760,6 +885,61 @@ export class NodeDetailPanel {
             statusMessageEl.textContent = message;
             statusMessageEl.className = 'status-message ' + type;
             statusMessageEl.style.display = 'block';
+        }
+
+        function renderHierarchy(segments) {
+            if (!hierarchyContainer) {
+                return;
+            }
+
+            const entries = Array.isArray(segments) ? segments : [];
+
+            if (!entries.length) {
+                hierarchyContainer.innerHTML =
+                    '<span class="hierarchy-empty">Hierarchy information unavailable.</span>';
+                return;
+            }
+
+            const parts = entries.map((segment, index) => {
+                const labelSource =
+                    segment?.displayName ||
+                    segment?.browseName ||
+                    segment?.nodeId ||
+                    (index === 0 ? 'Root' : 'Node');
+                const label = escapeHtml(labelSource);
+                const nodeId = typeof segment?.nodeId === 'string' ? segment.nodeId : '';
+                const isCurrent = Boolean(segment?.isCurrent);
+
+                if (isCurrent || !nodeId) {
+                    return (
+                        '<span class="hierarchy-segment">' +
+                        '<span class="hierarchy-current" aria-current="page">' +
+                        label +
+                        '</span>' +
+                        '</span>'
+                    );
+                }
+
+                return (
+                    '<span class="hierarchy-segment">' +
+                    '<button type="button" class="hierarchy-link" data-node-id="' +
+                    escapeHtml(nodeId) +
+                    '">' +
+                    label +
+                    '</button>' +
+                    '</span>'
+                );
+            });
+
+            let html = '';
+            for (let i = 0; i < parts.length; i++) {
+                html += parts[i];
+                if (i < parts.length - 1) {
+                    html += '<span class="hierarchy-divider">&rsaquo;</span>';
+                }
+            }
+
+            hierarchyContainer.innerHTML = html;
         }
 
         function updateVariablesCount(visibleCount) {
@@ -953,6 +1133,26 @@ export class NodeDetailPanel {
             }
         }
 
+        if (hierarchyContainer) {
+            hierarchyContainer.addEventListener('click', (event) => {
+                const target = event.target;
+                if (!(target instanceof Element)) {
+                    return;
+                }
+                const link = target.closest('.hierarchy-link');
+                if (!(link instanceof HTMLElement)) {
+                    return;
+                }
+                const nodeId = link.getAttribute('data-node-id');
+                if (nodeId) {
+                    vscode.postMessage({
+                        command: 'openVariableNode',
+                        nodeId
+                    });
+                }
+            });
+        }
+
         function renderNodeDetails(info) {
             if (!info) {
                 return;
@@ -1083,6 +1283,7 @@ export class NodeDetailPanel {
                 '</table>';
         }
 
+        renderHierarchy(initialHierarchy);
         renderNodeDetails(initialNodeInfo);
         renderReferences(initialReferences);
         initializeVariableSection();

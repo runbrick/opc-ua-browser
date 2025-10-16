@@ -35,6 +35,13 @@ export interface OpcuaReference {
     nodeClass: string;
 }
 
+export interface OpcuaNodePathSegment {
+    nodeId: string;
+    displayName: string;
+    browseName?: string;
+    nodeClass?: string;
+}
+
 export interface SearchResultItem {
     connectionId: string;
     connectionName: string;
@@ -44,6 +51,7 @@ export interface SearchResultItem {
     nodeClass: string;
     path: string;
     nodeIdPath: string[];
+    pathSegments?: OpcuaNodePathSegment[];
 }
 
 export enum ConnectionStatus {

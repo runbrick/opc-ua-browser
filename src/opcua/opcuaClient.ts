@@ -16,7 +16,13 @@ import {
     BrowseResult,
     ReferenceTypeIds
 } from 'node-opcua';
-import { OpcuaConnectionConfig, OpcuaNodeInfo, OpcuaReference, ConnectionStatus } from '../types';
+import {
+    OpcuaConnectionConfig,
+    OpcuaNodeInfo,
+    OpcuaReference,
+    ConnectionStatus,
+    OpcuaNodePathSegment
+} from '../types';
 import { normalizeNodeIdInput } from '../utils/nodeIdUtils';
 
 const HIERARCHICAL_REFERENCES_NODE_ID = coerceNodeId(ReferenceTypeIds.HierarchicalReferences);
@@ -629,6 +635,7 @@ export class OpcuaClient {
         nodeClass: string;
         path: string;
         nodeIdPath: string[];
+        pathSegments: OpcuaNodePathSegment[];
     } | undefined> {
         if (!this.session) {
             throw new Error('Not connected to OPC UA server');
@@ -639,14 +646,13 @@ export class OpcuaClient {
 
         interface QueueItem {
             nodeId: string;
-            path: string;
-            nodeIdPath: string[];
+            pathSegments: OpcuaNodePathSegment[];
             depth: number;
         }
 
         const visited = new Set<string>();
         const queue: QueueItem[] = [
-            { nodeId: 'RootFolder', path: '', nodeIdPath: [], depth: 0 }
+            { nodeId: 'RootFolder', pathSegments: [], depth: 0 }
         ];
 
         visited.add('RootFolder');
@@ -684,17 +690,27 @@ export class OpcuaClient {
 
                 const displayName = ref.displayName.text || ref.browseName.name || childNodeId;
                 const browseName = ref.browseName.name || '';
-                const path = current.path ? `${current.path} > ${displayName}` : displayName;
-                const nodeIdPath = [...current.nodeIdPath, childNodeId];
+                const nodeClassText = NodeClass[ref.nodeClass] || 'Unknown';
+
+                const segment: OpcuaNodePathSegment = {
+                    nodeId: childNodeId,
+                    displayName,
+                    browseName,
+                    nodeClass: nodeClassText
+                };
+                const pathSegments = [...current.pathSegments, segment];
+                const path = pathSegments.map((item) => item.displayName).join(' > ');
+                const nodeIdPath = pathSegments.map((item) => item.nodeId);
 
                 if (normalizedChildNodeId === normalizedTarget) {
                     return {
                         nodeId: childNodeId,
                         displayName,
                         browseName,
-                        nodeClass: NodeClass[ref.nodeClass] || 'Unknown',
+                        nodeClass: nodeClassText,
                         path,
-                        nodeIdPath
+                        nodeIdPath,
+                        pathSegments
                     };
                 }
 
@@ -704,8 +720,7 @@ export class OpcuaClient {
                         visited.add(childNodeId);
                         queue.push({
                             nodeId: childNodeId,
-                            path,
-                            nodeIdPath,
+                            pathSegments,
                             depth: current.depth + 1
                         });
                     }
