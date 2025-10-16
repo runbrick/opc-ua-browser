@@ -97,14 +97,18 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
             const references = await client.browseWithOptions('RootFolder', {
                 includeNonHierarchical: this.isShowingNonHierarchical(connectionId)
             });
+            const uniqueReferences = this.filterUniqueByNodeId(references);
             console.log(`Found ${references.length} root nodes`);
+            if (uniqueReferences.length !== references.length) {
+                console.log(`Filtered ${references.length - uniqueReferences.length} duplicate root references`);
+            }
 
             // 找到连接节点作为父节点
             const connectionNode = this.getConnectionNodes().find(
                 node => node instanceof ConnectionNode && (node as ConnectionNode).connectionId === connectionId
             );
 
-            const nodes = references.map(ref => new OpcuaNode(
+            const nodes = uniqueReferences.map(ref => new OpcuaNode(
                 connectionId,
                 ref.nodeId.toString(),
                 ref.displayName.text || ref.browseName.name || '',
@@ -137,7 +141,8 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
             const references = await client.browseWithOptions(nodeId, {
                 includeNonHierarchical: this.isShowingNonHierarchical(connectionId)
             });
-            const nodes = references.map(ref => new OpcuaNode(
+            const uniqueReferences = this.filterUniqueByNodeId(references);
+            const nodes = uniqueReferences.map(ref => new OpcuaNode(
                 connectionId,
                 ref.nodeId.toString(),
                 ref.displayName.text || ref.browseName.name || '',
@@ -175,6 +180,18 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         this.nodeParentMap.clear();
         this.refresh();
         return nextValue;
+    }
+
+    private filterUniqueByNodeId(references: ReferenceDescription[]): ReferenceDescription[] {
+        const seen = new Set<string>();
+        return references.filter(ref => {
+            const key = ref.nodeId.toString();
+            if (seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
     }
 
 }
