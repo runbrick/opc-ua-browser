@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaNodeInfo, OpcuaReference } from '../types';
+import type { VariableNodeCollectionResult } from '../opcua/opcuaClient';
 import { formatDataType } from '../utils/dataTypeMapper';
 
 export class NodeDetailPanel {
@@ -25,6 +26,11 @@ export class NodeDetailPanel {
                 switch (message.command) {
                     case 'requestNodeData':
                         await this.handleNodeDataRequest();
+                        break;
+                    case 'openVariableNode':
+                        if (typeof message.nodeId === 'string') {
+                            await this.handleOpenVariableNode(message.nodeId);
+                        }
                         break;
                 }
             },
@@ -81,9 +87,24 @@ export class NodeDetailPanel {
 
             const nodeInfo = await client.readNodeAttributes(nodeId);
             const references = await client.getReferences(nodeId);
+            let variableDescendants: VariableNodeCollectionResult | undefined;
+
+            if (nodeInfo.nodeClass === 'Object') {
+                try {
+                    variableDescendants = await client.collectVariableDescendantNodes(nodeId, {
+                        maxNodes: Number.MAX_SAFE_INTEGER
+                    });
+                } catch (error) {
+                    console.error('Failed to collect variable descendants:', error);
+                    variableDescendants = {
+                        nodes: [],
+                        truncated: false
+                    };
+                }
+            }
             const enrichedNodeInfo = this.enrichNodeInfo(nodeInfo);
 
-            this.panel.webview.html = this.getHtml(enrichedNodeInfo, references);
+            this.panel.webview.html = this.getHtml(enrichedNodeInfo, references, variableDescendants);
         } catch (error) {
             this.panel.webview.html = this.getErrorHtml(`Error loading node details: ${error}`);
         }
@@ -126,6 +147,23 @@ export class NodeDetailPanel {
         }
     }
 
+    private async handleOpenVariableNode(nodeId: string): Promise<void> {
+        if (!this.currentConnectionId || !nodeId) {
+            return;
+        }
+
+        if (this.currentNodeId === nodeId) {
+            return;
+        }
+
+        try {
+            await this.update(this.currentConnectionId, nodeId);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showErrorMessage(`Failed to open variable node: ${message}`);
+        }
+    }
+
     private enrichNodeInfo(
         nodeInfo: OpcuaNodeInfo
     ): OpcuaNodeInfo & { formattedDataType?: string } {
@@ -141,11 +179,15 @@ export class NodeDetailPanel {
 
     private getHtml(
         nodeInfo: OpcuaNodeInfo & { formattedDataType?: string },
-        references: OpcuaReference[]
+        references: OpcuaReference[],
+        variableDescendants?: VariableNodeCollectionResult
     ): string {
         const nonce = this.getNonce();
         const nodeInfoJson = this.serializeForWebview(nodeInfo);
         const referencesJson = this.serializeForWebview(references);
+        const variableDescendantsJson = variableDescendants
+            ? this.serializeForWebview(variableDescendants)
+            : 'null';
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -240,73 +282,226 @@ export class NodeDetailPanel {
             color: var(--vscode-descriptionForeground);
             font-size: 0.9em;
         }
+
+        .section-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .section-toolbar .search-input {
+            flex: 1 1 220px;
+            padding: 6px 8px;
+            border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+            border-radius: 4px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+        }
+
+        .section-toolbar .button {
+            padding: 6px 12px;
+            border-radius: 4px;
+            border: 1px solid var(--vscode-button-border, transparent);
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            cursor: pointer;
+        }
+
+        .section-toolbar .button:hover {
+            background-color: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+        }
+
+        .section-toolbar .button:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        .section-note {
+            margin-bottom: 10px;
+        }
+
+        .tab-container {
+            margin-top: 20px;
+        }
+
+        .tab-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .tab-button {
+            padding: 6px 12px;
+            border-radius: 4px;
+            border: 1px solid transparent;
+            background-color: var(--vscode-button-secondaryBackground, transparent);
+            color: var(--vscode-button-foreground, var(--vscode-foreground));
+            cursor: pointer;
+        }
+
+        .tab-button.active {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-color: var(--vscode-button-border, transparent);
+        }
+
+        .tab-button:hover:not(.active) {
+            background-color: var(
+                --vscode-button-hoverBackground,
+                var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.08))
+            );
+        }
+
+        .tab-button[hidden] {
+            display: none;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .link-button {
+            background: none;
+            border: none;
+            color: var(--vscode-textLink-foreground);
+            cursor: pointer;
+            padding: 0;
+            font: inherit;
+            text-decoration: underline;
+        }
+
+        .link-button:hover {
+            color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+        }
     </style>
 </head>
 <body>
     <h1 id="node-title"></h1>
 
-    <div class="section">
-        <h2>Attributes</h2>
-        <div id="status-message" class="status-message"></div>
-        <table>
-            <tr>
-                <th>Attribute</th>
-                <th>Value</th>
-            </tr>
-            <tr>
-                <td>Node ID</td>
-                <td id="attr-nodeId" class="value-cell"></td>
-            </tr>
-            <tr>
-                <td>Browse Name</td>
-                <td id="attr-browseName" class="value-cell"></td>
-            </tr>
-            <tr>
-                <td>Display Name</td>
-                <td id="attr-displayName" class="value-cell"></td>
-            </tr>
-            <tr>
-                <td>Node Class</td>
-                <td><span id="attr-nodeClass" class="node-class-badge"></span></td>
-            </tr>
-            <tr id="row-description">
-                <td>Description</td>
-                <td id="attr-description" class="value-cell"></td>
-            </tr>
-            <tr id="row-value">
-                <td>Value</td>
-                <td id="attr-value" class="value-cell"></td>
-            </tr>
-            <tr id="row-statusCode">
-                <td>Status Code</td>
-                <td id="attr-statusCode" class="value-cell"></td>
-            </tr>
-            <tr id="row-sourceTimestamp">
-                <td>Source Timestamp</td>
-                <td id="attr-sourceTimestamp" class="value-cell"></td>
-            </tr>
-            <tr id="row-serverTimestamp">
-                <td>Server Timestamp</td>
-                <td id="attr-serverTimestamp" class="value-cell"></td>
-            </tr>
-            <tr id="row-dataType">
-                <td>Data Type</td>
-                <td id="attr-dataType" class="value-cell"></td>
-            </tr>
-            <tr id="row-accessLevel">
-                <td>Access Level</td>
-                <td id="attr-accessLevel" class="value-cell"></td>
-            </tr>
-            <tr id="row-userAccessLevel">
-                <td>User Access Level</td>
-                <td id="attr-userAccessLevel" class="value-cell"></td>
-            </tr>
-        </table>
-    </div>
+    <div class="tab-container">
+        <div class="tab-buttons">
+            <button
+                class="tab-button active"
+                type="button"
+                id="attributes-tab-button"
+                data-target="attributes-tab"
+                aria-controls="attributes-tab"
+            >
+                Attributes
+            </button>
+            <button
+                class="tab-button"
+                type="button"
+                id="references-tab-button"
+                data-target="references-tab"
+                aria-controls="references-tab"
+            >
+                References
+            </button>
+            <button
+                class="tab-button"
+                type="button"
+                id="variables-tab-button"
+                data-target="variables-tab"
+                aria-controls="variables-tab"
+                hidden
+            >
+                Variable Descendants
+            </button>
+        </div>
 
-    <div class="section">
-        <h2>References <span id="references-count"></span></h2>
-        <div id="references-container"></div>
+        <div id="attributes-tab" class="tab-content active" role="tabpanel" aria-labelledby="attributes-tab-button">
+            <div class="section">
+                <h2>Attributes</h2>
+                <div id="status-message" class="status-message"></div>
+                <table>
+                    <tr>
+                        <th>Attribute</th>
+                        <th>Value</th>
+                    </tr>
+                    <tr>
+                        <td>Node ID</td>
+                        <td id="attr-nodeId" class="value-cell"></td>
+                    </tr>
+                    <tr>
+                        <td>Browse Name</td>
+                        <td id="attr-browseName" class="value-cell"></td>
+                    </tr>
+                    <tr>
+                        <td>Display Name</td>
+                        <td id="attr-displayName" class="value-cell"></td>
+                    </tr>
+                    <tr>
+                        <td>Node Class</td>
+                        <td><span id="attr-nodeClass" class="node-class-badge"></span></td>
+                    </tr>
+                    <tr id="row-description">
+                        <td>Description</td>
+                        <td id="attr-description" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-value">
+                        <td>Value</td>
+                        <td id="attr-value" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-statusCode">
+                        <td>Status Code</td>
+                        <td id="attr-statusCode" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-sourceTimestamp">
+                        <td>Source Timestamp</td>
+                        <td id="attr-sourceTimestamp" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-serverTimestamp">
+                        <td>Server Timestamp</td>
+                        <td id="attr-serverTimestamp" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-dataType">
+                        <td>Data Type</td>
+                        <td id="attr-dataType" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-accessLevel">
+                        <td>Access Level</td>
+                        <td id="attr-accessLevel" class="value-cell"></td>
+                    </tr>
+                    <tr id="row-userAccessLevel">
+                        <td>User Access Level</td>
+                        <td id="attr-userAccessLevel" class="value-cell"></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <div id="references-tab" class="tab-content" role="tabpanel" aria-labelledby="references-tab-button">
+            <div class="section">
+                <h2>References <span id="references-count"></span></h2>
+                <div id="references-container"></div>
+            </div>
+        </div>
+
+        <div id="variables-tab" class="tab-content" role="tabpanel" aria-labelledby="variables-tab-button">
+            <div class="section">
+                <h2>Variable Descendants <span id="variables-count"></span></h2>
+                <div class="section-toolbar" id="variables-toolbar">
+                    <input
+                        type="search"
+                        id="variables-search"
+                        class="search-input"
+                        placeholder="Filter variables..."
+                        aria-label="Search variables"
+                    />
+                    <button id="variables-export" class="button" type="button">Export to Excel</button>
+                </div>
+                <div id="variables-note" class="section-note meta-text"></div>
+                <div id="variables-container"></div>
+            </div>
+        </div>
     </div>
 
     <script nonce="${nonce}">
@@ -314,9 +509,67 @@ export class NodeDetailPanel {
         const REFRESH_INTERVAL = 1000;
         const initialNodeInfo = ${nodeInfoJson};
         const initialReferences = ${referencesJson};
+        const initialVariableDescendants = ${variableDescendantsJson};
         let refreshTimer;
 
         const statusMessageEl = document.getElementById('status-message');
+        const variablesTabEl = document.getElementById('variables-tab');
+        const variablesTabButton = document.getElementById('variables-tab-button');
+        const variablesContainerEl = document.getElementById('variables-container');
+        const variablesCountEl = document.getElementById('variables-count');
+        const variablesSearchInput = document.getElementById('variables-search');
+        const variablesExportButton = document.getElementById('variables-export');
+        const variablesNoteEl = document.getElementById('variables-note');
+        const tabButtons = Array.prototype.slice.call(document.querySelectorAll('.tab-button'));
+        const tabContents = Array.prototype.slice.call(document.querySelectorAll('.tab-content'));
+
+        const variableNodes = Array.isArray(initialVariableDescendants?.nodes)
+            ? initialVariableDescendants.nodes.slice()
+            : [];
+        const variablesTruncated = Boolean(initialVariableDescendants?.truncated);
+        let filteredVariableNodes = variableNodes.slice();
+
+        function activateTab(targetId) {
+            if (!targetId) {
+                return;
+            }
+
+            tabButtons.forEach((button) => {
+                if (!(button instanceof HTMLElement)) {
+                    return;
+                }
+
+                const buttonTarget = button.getAttribute('data-target');
+                const isActive = buttonTarget === targetId;
+                button.classList.toggle('active', isActive);
+                button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                button.tabIndex = isActive ? 0 : -1;
+            });
+
+            tabContents.forEach((content) => {
+                if (!(content instanceof HTMLElement)) {
+                    return;
+                }
+                content.classList.toggle('active', content.id === targetId);
+            });
+        }
+
+        tabButtons.forEach((button) => {
+            if (!(button instanceof HTMLElement)) {
+                return;
+            }
+            button.setAttribute('aria-selected', button.classList.contains('active') ? 'true' : 'false');
+            button.tabIndex = button.classList.contains('active') ? 0 : -1;
+            button.addEventListener('click', () => {
+                if (button.hidden || button.hasAttribute('disabled')) {
+                    return;
+                }
+                const target = button.getAttribute('data-target');
+                if (target) {
+                    activateTab(target);
+                }
+            });
+        });
 
         function escapeHtml(text) {
             if (text === null || text === undefined) {
@@ -383,6 +636,225 @@ export class NodeDetailPanel {
             statusMessageEl.textContent = message;
             statusMessageEl.className = 'status-message ' + type;
             statusMessageEl.style.display = 'block';
+        }
+
+        function updateVariablesCount(visibleCount) {
+            if (!variablesCountEl) {
+                return;
+            }
+
+            if (!variableNodes.length) {
+                variablesCountEl.textContent = '';
+                return;
+            }
+
+            if (visibleCount === variableNodes.length) {
+                variablesCountEl.textContent = '(' + variableNodes.length + ')';
+            } else {
+                variablesCountEl.textContent = '(' + visibleCount + '/' + variableNodes.length + ')';
+            }
+        }
+
+        function updateVariablesNote() {
+            if (!variablesNoteEl) {
+                return;
+            }
+
+            if (variablesTruncated && variableNodes.length > 0) {
+                variablesNoteEl.textContent =
+                    'Showing first ' + variableNodes.length + ' variables (results truncated).';
+                variablesNoteEl.style.display = 'block';
+            } else {
+                variablesNoteEl.textContent = '';
+                variablesNoteEl.style.display = 'none';
+            }
+        }
+
+        function renderVariableList() {
+            if (!variablesTabEl || !variablesContainerEl || !initialVariableDescendants) {
+                return;
+            }
+
+            if (!variableNodes.length) {
+                variablesContainerEl.innerHTML =
+                    '<p class="empty-message">No variable descendants found.</p>';
+                updateVariablesCount(0);
+                if (variablesExportButton) {
+                    variablesExportButton.disabled = true;
+                }
+                updateVariablesNote();
+                return;
+            }
+
+            if (!filteredVariableNodes.length) {
+                variablesContainerEl.innerHTML =
+                    '<p class="empty-message">No variables match the current filter.</p>';
+                updateVariablesCount(0);
+                if (variablesExportButton) {
+                    variablesExportButton.disabled = true;
+                }
+                updateVariablesNote();
+                return;
+            }
+
+            const rows = filteredVariableNodes
+                .map((variable) => {
+                    const nodeIdDisplay = escapeHtml(variable.nodeId || '');
+                    const nodeIdAttr = escapeHtml(variable.nodeId || '');
+                    const displayName = escapeHtml(variable.displayName || '');
+                    const browseName = escapeHtml(variable.browseName || '');
+                    return (
+                        '<tr>' +
+                        '<td class="value-cell">' + nodeIdDisplay + '</td>' +
+                        '<td class="value-cell">' + displayName + '</td>' +
+                        '<td class="value-cell">' + browseName + '</td>' +
+                        '<td><button type="button" class="link-button variable-open" data-node-id="' +
+                        nodeIdAttr +
+                        '">Open</button></td>' +
+                        '</tr>'
+                    );
+                })
+                .join('');
+
+            variablesContainerEl.innerHTML =
+                '<table>' +
+                '<tr>' +
+                '<th>Node ID</th>' +
+                '<th>Display Name</th>' +
+                '<th>Browse Name</th>' +
+                '<th></th>' +
+                '</tr>' +
+                rows +
+                '</table>';
+
+            updateVariablesCount(filteredVariableNodes.length);
+            if (variablesExportButton) {
+                variablesExportButton.disabled = filteredVariableNodes.length === 0;
+            }
+            updateVariablesNote();
+        }
+
+        function applyVariableFilter(term) {
+            if (!variableNodes.length) {
+                filteredVariableNodes = [];
+                renderVariableList();
+                return;
+            }
+
+            const normalized = term.trim().toLowerCase();
+
+            if (!normalized) {
+                filteredVariableNodes = variableNodes.slice();
+            } else {
+                filteredVariableNodes = variableNodes.filter((variable) => {
+                    const nodeId = (variable.nodeId || '').toLowerCase();
+                    const displayName = (variable.displayName || '').toLowerCase();
+                    const browseName = (variable.browseName || '').toLowerCase();
+
+                    return (
+                        nodeId.includes(normalized) ||
+                        displayName.includes(normalized) ||
+                        browseName.includes(normalized)
+                    );
+                });
+            }
+
+            renderVariableList();
+        }
+
+        function exportVariablesToExcel() {
+            if (!filteredVariableNodes.length) {
+                return;
+            }
+
+            const headerRow =
+                '<tr>' +
+                '<th>Node ID</th>' +
+                '<th>Display Name</th>' +
+                '<th>Browse Name</th>' +
+                '</tr>';
+
+            const dataRows = filteredVariableNodes
+                .map((variable) => {
+                    const nodeId = escapeHtml(variable.nodeId || '');
+                    const displayName = escapeHtml(variable.displayName || '');
+                    const browseName = escapeHtml(variable.browseName || '');
+                    return (
+                        '<tr>' +
+                        '<td>' + nodeId + '</td>' +
+                        '<td>' + displayName + '</td>' +
+                        '<td>' + browseName + '</td>' +
+                        '</tr>'
+                    );
+                })
+                .join('');
+
+            const tableHtml = '<table>' + headerRow + dataRows + '</table>';
+            const htmlContent = '<html><head><meta charset="UTF-8"></head><body>' + tableHtml + '</body></html>';
+            const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/vnd.ms-excel' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            const titleEl = document.getElementById('node-title');
+            const baseName = titleEl && titleEl.textContent ? titleEl.textContent.trim() : 'variables';
+            const sanitizedName = baseName.replace(/[\\/:*?"<>|]+/g, '_') || 'variables';
+            link.href = url;
+            link.download = sanitizedName + '_variables.xls';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+        }
+
+        function initializeVariableSection() {
+            if (!variablesTabButton || !variablesTabEl) {
+                return;
+            }
+
+            if (!initialVariableDescendants) {
+                variablesTabButton.hidden = true;
+                return;
+            }
+
+            variablesTabButton.hidden = false;
+            variablesTabButton.setAttribute(
+                'aria-selected',
+                variablesTabButton.classList.contains('active') ? 'true' : 'false'
+            );
+            variablesTabButton.tabIndex = variablesTabButton.classList.contains('active') ? 0 : -1;
+
+            renderVariableList();
+
+            if (variablesSearchInput) {
+                variablesSearchInput.addEventListener('input', (event) => {
+                    const term = event.target && typeof event.target.value === 'string' ? event.target.value : '';
+                    applyVariableFilter(term);
+                });
+            }
+
+            if (variablesExportButton) {
+                variablesExportButton.addEventListener('click', () => exportVariablesToExcel());
+                variablesExportButton.disabled = filteredVariableNodes.length === 0;
+            }
+
+            if (variablesContainerEl) {
+                variablesContainerEl.addEventListener('click', (event) => {
+                    const target = event.target;
+                    if (!(target instanceof Element)) {
+                        return;
+                    }
+                    const buttonEl = target.closest('.variable-open');
+                    if (!(buttonEl instanceof HTMLElement)) {
+                        return;
+                    }
+                    const nodeId = buttonEl.getAttribute('data-node-id');
+                    if (nodeId) {
+                        vscode.postMessage({
+                            command: 'openVariableNode',
+                            nodeId
+                        });
+                    }
+                });
+            }
         }
 
         function renderNodeDetails(info) {
@@ -517,6 +989,7 @@ export class NodeDetailPanel {
 
         renderNodeDetails(initialNodeInfo);
         renderReferences(initialReferences);
+        initializeVariableSection();
         showStatusMessage('');
         vscode.postMessage({ command: 'requestNodeData' });
 
