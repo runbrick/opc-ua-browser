@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaConnectionConfig, ConnectionStatus } from '../types';
-import { ReferenceDescription } from 'node-opcua';
+import { ReferenceDescription, NodeClass } from 'node-opcua';
 import { OpcuaClient } from '../opcua/opcuaClient';
 
 export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> {
@@ -14,15 +14,26 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     // Tracks whether each connection shows non-hierarchical references
     private showNonHierarchicalReferences: Map<string, boolean> = new Map();
 
+    private readonly childPresenceCache: Map<string, { hasChildren: boolean; expiresAt: number }> = new Map();
+    private static readonly CHILD_CACHE_TTL_MS = 60_000;
+
     
     constructor(private connectionManager: ConnectionManager) {}
 
     refresh(element?: TreeNode): void {
+        if (!element) {
+            this.clearChildPresenceCache();
+        } else if (element instanceof ConnectionNode) {
+            this.clearChildPresenceCache(element.connectionId);
+        } else if (element instanceof OpcuaNode) {
+            this.clearChildPresenceCache(element.connectionId);
+        }
         this._onDidChangeTreeData.fire(element);
     }
 
     refreshConnection(connectionId: string): void {
         // 刷新特定连接节点
+        this.clearChildPresenceCache(connectionId);
         this._onDidChangeTreeData.fire();
     }
 
@@ -187,14 +198,35 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         }
 
         const includeNonHierarchical = this.isShowingNonHierarchical(connectionId);
-        const concurrency = Math.min(4, references.length);
+        const now = Date.now();
+        const refsToQuery: ReferenceDescription[] = [];
+
+        for (const ref of references) {
+            const nodeIdString = ref.nodeId?.toString();
+            if (!nodeIdString) {
+                continue;
+            }
+            const cacheKey = this.makeCacheKey(connectionId, nodeIdString, includeNonHierarchical);
+            const cached = this.childPresenceCache.get(cacheKey);
+            if (cached && cached.expiresAt > now) {
+                result.set(nodeIdString, cached.hasChildren);
+            } else {
+                refsToQuery.push(ref);
+            }
+        }
+
+        if (refsToQuery.length === 0) {
+            return result;
+        }
+
+        const concurrency = Math.min(4, refsToQuery.length);
         let currentIndex = 0;
 
         const worker = async (): Promise<void> => {
-            while (currentIndex < references.length) {
+            while (currentIndex < refsToQuery.length) {
                 const index = currentIndex;
                 currentIndex += 1;
-                const ref = references[index];
+                const ref = refsToQuery[index];
                 const nodeIdString = ref.nodeId?.toString();
                 if (!nodeIdString) {
                     continue;
@@ -204,10 +236,26 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                     const childRefs = await client.browseWithOptions(nodeIdString, {
                         includeNonHierarchical
                     });
-                    result.set(nodeIdString, childRefs.length > 0);
+                    const hasChildren = childRefs.length > 0;
+                    result.set(nodeIdString, hasChildren);
+                    this.childPresenceCache.set(
+                        this.makeCacheKey(connectionId, nodeIdString, includeNonHierarchical),
+                        {
+                            hasChildren,
+                            expiresAt: Date.now() + OpcuaTreeDataProvider.CHILD_CACHE_TTL_MS
+                        }
+                    );
                 } catch (error) {
                     console.error(`Failed to determine children for node ${nodeIdString}:`, error);
-                    result.set(nodeIdString, false);
+                    const hasChildren = false;
+                    result.set(nodeIdString, hasChildren);
+                    this.childPresenceCache.set(
+                        this.makeCacheKey(connectionId, nodeIdString, includeNonHierarchical),
+                        {
+                            hasChildren,
+                            expiresAt: Date.now() + OpcuaTreeDataProvider.CHILD_CACHE_TTL_MS
+                        }
+                    );
                 }
             }
         };
@@ -221,6 +269,24 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         return result;
     }
 
+    private makeCacheKey(connectionId: string, nodeId: string, includeNonHierarchical: boolean): string {
+        return `${connectionId}::${includeNonHierarchical ? 'all' : 'hier'}::${nodeId}`;
+    }
+
+    private clearChildPresenceCache(connectionId?: string): void {
+        if (!connectionId) {
+            this.childPresenceCache.clear();
+            return;
+        }
+
+        const prefix = `${connectionId}::`;
+        for (const key of Array.from(this.childPresenceCache.keys())) {
+            if (key.startsWith(prefix)) {
+                this.childPresenceCache.delete(key);
+            }
+        }
+    }
+
     isShowingNonHierarchical(connectionId: string): boolean {
         return this.showNonHierarchicalReferences.get(connectionId) ?? true;
     }
@@ -229,6 +295,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         const nextValue = !this.isShowingNonHierarchical(connectionId);
         this.showNonHierarchicalReferences.set(connectionId, nextValue);
         this.nodeParentMap.clear();
+        this.clearChildPresenceCache(connectionId);
         this.refresh();
         return nextValue;
     }
