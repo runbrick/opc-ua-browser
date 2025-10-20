@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaConnectionConfig, ConnectionStatus } from '../types';
-import { ReferenceDescription, NodeClass } from 'node-opcua';
+import { ReferenceDescription } from 'node-opcua';
+import { OpcuaClient } from '../opcua/opcuaClient';
 
 export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> {
     private _onDidChangeTreeData: vscode.EventEmitter<TreeNode | undefined | null | void> = new vscode.EventEmitter<TreeNode | undefined | null | void>();
@@ -108,13 +109,18 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 node => node instanceof ConnectionNode && (node as ConnectionNode).connectionId === connectionId
             );
 
-            const nodes = uniqueReferences.map(ref => new OpcuaNode(
-                connectionId,
-                ref.nodeId.toString(),
-                ref.displayName.text || ref.browseName.name || '',
-                ref.nodeClass,
-                true
-            ));
+            const childPresence = await this.resolveChildPresence(client, connectionId, uniqueReferences);
+            const nodes = uniqueReferences.map(ref => {
+                const nodeIdString = ref.nodeId?.toString() ?? '';
+                const hasChildren = childPresence.get(nodeIdString) ?? false;
+                return new OpcuaNode(
+                    connectionId,
+                    nodeIdString,
+                    ref.displayName.text || ref.browseName.name || '',
+                    ref.nodeClass,
+                    hasChildren
+                );
+            });
 
             // 缓存父子关系和节点
             if (connectionNode) {
@@ -142,13 +148,18 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 includeNonHierarchical: this.isShowingNonHierarchical(connectionId)
             });
             const uniqueReferences = this.filterUniqueByNodeId(references);
-            const nodes = uniqueReferences.map(ref => new OpcuaNode(
-                connectionId,
-                ref.nodeId.toString(),
-                ref.displayName.text || ref.browseName.name || '',
-                ref.nodeClass,
-                this.hasChildren(ref)
-            ));
+            const childPresence = await this.resolveChildPresence(client, connectionId, uniqueReferences);
+            const nodes = uniqueReferences.map(ref => {
+                const nodeIdString = ref.nodeId?.toString() ?? '';
+                const hasChildren = childPresence.get(nodeIdString) ?? false;
+                return new OpcuaNode(
+                    connectionId,
+                    nodeIdString,
+                    ref.displayName.text || ref.browseName.name || '',
+                    ref.nodeClass,
+                    hasChildren
+                );
+            });
 
             // 缓存父子关系和节点
             if (parentNode) {
@@ -165,9 +176,49 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
         }
     }
 
-    private hasChildren(ref: ReferenceDescription): boolean {
-        // 对象和文件夹通常有子节点
-        return ref.nodeClass === NodeClass.Object;
+    private async resolveChildPresence(
+        client: OpcuaClient,
+        connectionId: string,
+        references: ReferenceDescription[]
+    ): Promise<Map<string, boolean>> {
+        const result = new Map<string, boolean>();
+        if (references.length === 0) {
+            return result;
+        }
+
+        const includeNonHierarchical = this.isShowingNonHierarchical(connectionId);
+        const concurrency = Math.min(4, references.length);
+        let currentIndex = 0;
+
+        const worker = async (): Promise<void> => {
+            while (currentIndex < references.length) {
+                const index = currentIndex;
+                currentIndex += 1;
+                const ref = references[index];
+                const nodeIdString = ref.nodeId?.toString();
+                if (!nodeIdString) {
+                    continue;
+                }
+
+                try {
+                    const childRefs = await client.browseWithOptions(nodeIdString, {
+                        includeNonHierarchical
+                    });
+                    result.set(nodeIdString, childRefs.length > 0);
+                } catch (error) {
+                    console.error(`Failed to determine children for node ${nodeIdString}:`, error);
+                    result.set(nodeIdString, false);
+                }
+            }
+        };
+
+        await Promise.all(
+            new Array(concurrency)
+                .fill(0)
+                .map(() => worker())
+        );
+
+        return result;
     }
 
     isShowingNonHierarchical(connectionId: string): boolean {
