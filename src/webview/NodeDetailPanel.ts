@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { accessLevelFlagToString, type AccessLevelFlag } from 'node-opcua-data-model';
 import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaNodeInfo, OpcuaReference, OpcuaNodePathSegment } from '../types';
 import type { VariableNodeCollectionResult } from '../opcua/opcuaClient';
@@ -362,15 +363,36 @@ export class NodeDetailPanel {
 
     private enrichNodeInfo(
         nodeInfo: OpcuaNodeInfo
-    ): OpcuaNodeInfo & { formattedDataType?: string } {
+    ): OpcuaNodeInfo & {
+        formattedDataType?: string;
+        formattedAccessLevel?: string;
+        formattedUserAccessLevel?: string;
+    } {
         const formattedDataType = nodeInfo.dataType
             ? formatDataType(nodeInfo.dataType)
             : undefined;
+        const formattedAccessLevel = this.formatAccessLevel(nodeInfo.accessLevel);
+        const formattedUserAccessLevel = this.formatAccessLevel(nodeInfo.userAccessLevel);
 
         return {
             ...nodeInfo,
-            formattedDataType
+            formattedDataType,
+            formattedAccessLevel,
+            formattedUserAccessLevel
         };
+    }
+
+    private formatAccessLevel(value: number | undefined): string | undefined {
+        if (typeof value !== 'number' || Number.isNaN(value)) {
+            return undefined;
+        }
+
+        const flagsText = accessLevelFlagToString(value as AccessLevelFlag);
+        if (!flagsText || flagsText === 'None') {
+            return `${value} (None)`;
+        }
+
+        return `${flagsText} (${value})`;
     }
 
     private getHtml(
@@ -1221,17 +1243,29 @@ export class NodeDetailPanel {
                 setHtml('attr-dataType', '');
             }
 
-            if (info.accessLevel !== undefined) {
+            if (info.formattedAccessLevel || info.accessLevel !== undefined) {
                 toggleRow('row-accessLevel', true);
-                setText('attr-accessLevel', String(info.accessLevel));
+                const accessLevelValue =
+                    typeof info.accessLevel === 'number' ? String(info.accessLevel) : '';
+                const accessLevelText =
+                    info.formattedAccessLevel && info.formattedAccessLevel.length > 0
+                        ? String(info.formattedAccessLevel)
+                        : accessLevelValue;
+                setText('attr-accessLevel', accessLevelText);
             } else {
                 toggleRow('row-accessLevel', false);
                 setText('attr-accessLevel', '');
             }
 
-            if (info.userAccessLevel !== undefined) {
+            if (info.formattedUserAccessLevel || info.userAccessLevel !== undefined) {
                 toggleRow('row-userAccessLevel', true);
-                setText('attr-userAccessLevel', String(info.userAccessLevel));
+                const userAccessLevelValue =
+                    typeof info.userAccessLevel === 'number' ? String(info.userAccessLevel) : '';
+                const userAccessLevelText =
+                    info.formattedUserAccessLevel && info.formattedUserAccessLevel.length > 0
+                        ? String(info.formattedUserAccessLevel)
+                        : userAccessLevelValue;
+                setText('attr-userAccessLevel', userAccessLevelText);
             } else {
                 toggleRow('row-userAccessLevel', false);
                 setText('attr-userAccessLevel', '');
