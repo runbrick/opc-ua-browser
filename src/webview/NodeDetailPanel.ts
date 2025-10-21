@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { accessLevelFlagToString, type AccessLevelFlag } from 'node-opcua-data-model';
 import { ConnectionManager } from '../opcua/connectionManager';
 import { OpcuaNodeInfo, OpcuaReference, OpcuaNodePathSegment } from '../types';
-import type { VariableNodeCollectionResult } from '../opcua/opcuaClient';
+import type { OpcuaClient, VariableNodeCollectionResult } from '../opcua/opcuaClient';
 import { formatDataType } from '../utils/dataTypeMapper';
 import { exportVariableRowsToExcel, type VariableNodeExportRow } from '../utils/excelExporter';
 
@@ -20,6 +20,10 @@ export class NodeDetailPanel {
     private isRefreshing = false;
     private currentNodeLabel: string | undefined;
     private currentHierarchySegments: HierarchySegment[] = [];
+    private hierarchyRequestVersion = 0;
+    private canLoadVariableDescendants = false;
+    private isLoadingVariableDescendants = false;
+    private currentVariableDescendants: VariableNodeCollectionResult | undefined;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -43,6 +47,9 @@ export class NodeDetailPanel {
                         break;
                     case 'exportVariableNodes':
                         await this.handleExportVariableNodes(message);
+                        break;
+                    case 'loadVariableDescendants':
+                        await this.handleLoadVariableDescendants();
                         break;
                 }
             },
@@ -90,6 +97,9 @@ export class NodeDetailPanel {
         this.currentNodeId = nodeId;
         this.isRefreshing = false;
         this.currentHierarchySegments = [];
+        this.currentVariableDescendants = undefined;
+        this.isLoadingVariableDescendants = false;
+        this.canLoadVariableDescendants = false;
 
         try {
             const client = this.connectionManager.getConnection(connectionId);
@@ -100,45 +110,60 @@ export class NodeDetailPanel {
 
             const nodeInfo = await client.readNodeAttributes(nodeId);
             const references = await client.getReferences(nodeId);
-            let variableDescendants: VariableNodeCollectionResult | undefined;
-            let hierarchySegments: HierarchySegment[] = [];
 
-            if (nodeInfo.nodeClass === 'Object') {
-                try {
-                    variableDescendants = await client.collectVariableDescendantNodes(nodeId, {
-                        maxNodes: Number.MAX_SAFE_INTEGER
-                    });
-                } catch (error) {
-                    console.error('Failed to collect variable descendants:', error);
-                    variableDescendants = {
-                        nodes: [],
-                        truncated: false
-                    };
-                }
-            }
+            this.canLoadVariableDescendants = nodeInfo.nodeClass === 'Object';
 
             const enrichedNodeInfo = this.enrichNodeInfo(nodeInfo);
             this.currentNodeLabel =
                 nodeInfo.displayName || nodeInfo.browseName || nodeInfo.nodeId || this.currentNodeId;
-            try {
-                const pathInfo = await client.findNodePathByNodeId(nodeId, { maxDepth: 50 });
-                const pathSegments = pathInfo?.pathSegments ?? [];
-                hierarchySegments = this.buildHierarchySegments(pathSegments, enrichedNodeInfo);
-            } catch (error) {
-                console.error('Failed to resolve node hierarchy path:', error);
-                hierarchySegments = this.buildHierarchySegments([], enrichedNodeInfo);
-            }
 
-            this.currentHierarchySegments = hierarchySegments;
+            const fallbackHierarchy = this.buildHierarchySegments([], enrichedNodeInfo);
+            this.currentHierarchySegments = fallbackHierarchy;
+            const requestVersion = ++this.hierarchyRequestVersion;
 
             this.panel.webview.html = this.getHtml(
                 enrichedNodeInfo,
                 references,
-                variableDescendants,
-                hierarchySegments
+                undefined,
+                fallbackHierarchy,
+                this.canLoadVariableDescendants
             );
+
+            void this.refreshHierarchySegments(client, nodeId, enrichedNodeInfo, requestVersion);
         } catch (error) {
             this.panel.webview.html = this.getErrorHtml(`Error loading node details: ${error}`);
+        }
+    }
+
+    private async refreshHierarchySegments(
+        client: OpcuaClient,
+        nodeId: string,
+        fallbackNode: OpcuaNodeInfo,
+        requestVersion: number
+    ): Promise<void> {
+        try {
+            const pathInfo = await client.findNodePathByNodeId(nodeId, { maxDepth: 50 });
+            const pathSegments = pathInfo?.pathSegments ?? [];
+            const hierarchySegments = this.buildHierarchySegments(pathSegments, fallbackNode);
+
+            if (
+                requestVersion !== this.hierarchyRequestVersion ||
+                this.currentNodeId !== nodeId
+            ) {
+                return;
+            }
+
+            this.currentHierarchySegments = hierarchySegments;
+            try {
+                await this.panel.webview.postMessage({
+                    command: 'hierarchy',
+                    data: hierarchySegments
+                });
+            } catch (postError) {
+                console.warn('Failed to post hierarchy update to webview:', postError);
+            }
+        } catch (error) {
+            console.error('Failed to resolve node hierarchy path:', error);
         }
     }
 
@@ -176,6 +201,71 @@ export class NodeDetailPanel {
             });
         } finally {
             this.isRefreshing = false;
+        }
+    }
+
+    private async handleLoadVariableDescendants(): Promise<void> {
+        if (!this.currentConnectionId || !this.currentNodeId) {
+            return;
+        }
+
+        if (!this.canLoadVariableDescendants) {
+            await this.panel.webview.postMessage({
+                command: 'variableDescendantsUnavailable'
+            });
+            return;
+        }
+
+        if (this.currentVariableDescendants) {
+            await this.panel.webview.postMessage({
+                command: 'variableDescendants',
+                data: this.currentVariableDescendants
+            });
+            return;
+        }
+
+        if (this.isLoadingVariableDescendants) {
+            return;
+        }
+
+        const client = this.connectionManager.getConnection(this.currentConnectionId);
+        if (!client || !client.isConnected) {
+            await this.panel.webview.postMessage({
+                command: 'variableDescendantsError',
+                message: 'Not connected to OPC UA server'
+            });
+            return;
+        }
+
+        this.isLoadingVariableDescendants = true;
+        const requestNodeId = this.currentNodeId;
+
+        try {
+            const result = await client.collectVariableDescendantNodes(requestNodeId, {
+                maxNodes: Number.MAX_SAFE_INTEGER
+            });
+
+            if (this.currentNodeId !== requestNodeId) {
+                return;
+            }
+
+            this.currentVariableDescendants = result;
+            await this.panel.webview.postMessage({
+                command: 'variableDescendants',
+                data: result
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (this.currentNodeId === requestNodeId) {
+                await this.panel.webview.postMessage({
+                    command: 'variableDescendantsError',
+                    message
+                });
+            }
+        } finally {
+            if (this.currentNodeId === requestNodeId) {
+                this.isLoadingVariableDescendants = false;
+            }
         }
     }
 
@@ -399,7 +489,8 @@ export class NodeDetailPanel {
         nodeInfo: OpcuaNodeInfo & { formattedDataType?: string },
         references: OpcuaReference[],
         variableDescendants: VariableNodeCollectionResult | undefined,
-        hierarchySegments: HierarchySegment[]
+        hierarchySegments: HierarchySegment[],
+        supportsVariableDescendants: boolean
     ): string {
         const nonce = this.getNonce();
         const nodeInfoJson = this.serializeForWebview(nodeInfo);
@@ -408,6 +499,7 @@ export class NodeDetailPanel {
             ? this.serializeForWebview(variableDescendants)
             : 'null';
         const hierarchyJson = this.serializeForWebview(hierarchySegments);
+        const supportsVariableDescendantsJson = this.serializeForWebview(supportsVariableDescendants);
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -776,6 +868,7 @@ export class NodeDetailPanel {
         const initialReferences = ${referencesJson};
         const initialVariableDescendants = ${variableDescendantsJson};
         const initialHierarchy = ${hierarchyJson};
+        const supportsVariableDescendants = ${supportsVariableDescendantsJson};
         let refreshTimer;
 
         const hierarchyContainer = document.getElementById('node-hierarchy');
@@ -794,13 +887,20 @@ export class NodeDetailPanel {
         const tabButtons = Array.prototype.slice.call(document.querySelectorAll('.tab-button'));
         const tabContents = Array.prototype.slice.call(document.querySelectorAll('.tab-content'));
 
-        const variableNodes = Array.isArray(initialVariableDescendants?.nodes)
-            ? initialVariableDescendants.nodes.slice()
-            : [];
-        const variablesTruncated = Boolean(initialVariableDescendants?.truncated);
+        const hasInitialVariableDescendants =
+            initialVariableDescendants !== null && initialVariableDescendants !== undefined;
+        let variableNodes =
+            hasInitialVariableDescendants && Array.isArray(initialVariableDescendants?.nodes)
+                ? initialVariableDescendants.nodes.slice()
+                : [];
+        let variablesTruncated =
+            hasInitialVariableDescendants && Boolean(initialVariableDescendants?.truncated);
         let filteredVariableNodes = variableNodes.slice();
+        let variableDataLoaded = hasInitialVariableDescendants;
+        let variableDataLoading = false;
+        let lastVariableLoadError = '';
 
-        function activateTab(targetId) {
+        function activateTab(targetId, userInitiated = false) {
             if (!targetId) {
                 return;
             }
@@ -823,6 +923,10 @@ export class NodeDetailPanel {
                 }
                 content.classList.toggle('active', content.id === targetId);
             });
+
+            if (targetId === 'variables-tab' && userInitiated) {
+                handleVariablesTabActivated();
+            }
         }
 
         tabButtons.forEach((button) => {
@@ -837,7 +941,7 @@ export class NodeDetailPanel {
                 }
                 const target = button.getAttribute('data-target');
                 if (target) {
-                    activateTab(target);
+                    activateTab(target, true);
                 }
             });
         });
@@ -969,8 +1073,13 @@ export class NodeDetailPanel {
                 return;
             }
 
-            if (!variableNodes.length) {
+            if (!variableDataLoaded) {
                 variablesCountEl.textContent = '';
+                return;
+            }
+
+            if (!variableNodes.length) {
+                variablesCountEl.textContent = '(0)';
                 return;
             }
 
@@ -986,6 +1095,12 @@ export class NodeDetailPanel {
                 return;
             }
 
+            if (!variableDataLoaded) {
+                variablesNoteEl.textContent = '';
+                variablesNoteEl.style.display = 'none';
+                return;
+            }
+
             if (variablesTruncated && variableNodes.length > 0) {
                 variablesNoteEl.textContent =
                     'Showing first ' + variableNodes.length + ' variables (results truncated).';
@@ -996,8 +1111,89 @@ export class NodeDetailPanel {
             }
         }
 
+        function setVariableInteractionsEnabled(enabled) {
+            if (variablesSearchInput) {
+                variablesSearchInput.disabled = !enabled;
+                if (!enabled) {
+                    variablesSearchInput.value = '';
+                }
+            }
+            if (variablesExportButton) {
+                variablesExportButton.disabled = !enabled || filteredVariableNodes.length === 0;
+            }
+        }
+
+        function renderVariablesMessage(message, className = 'empty-message meta-text') {
+            if (!variablesContainerEl) {
+                return;
+            }
+            variablesContainerEl.innerHTML = '<p class="' + className + '">' + escapeHtml(message) + '</p>';
+            updateVariablesCount(0);
+            updateVariablesNote();
+        }
+
+        function showVariablesLoadPrompt() {
+            variableDataLoading = false;
+            variableDataLoaded = false;
+            lastVariableLoadError = '';
+            setVariableInteractionsEnabled(false);
+            renderVariablesMessage('Variable descendants load on demand. Select this tab to fetch them.');
+        }
+
+        function showVariablesLoadingState() {
+            variableDataLoading = true;
+            lastVariableLoadError = '';
+            setVariableInteractionsEnabled(false);
+            renderVariablesMessage('Loading variable descendants...', 'empty-message meta-text');
+        }
+
+        function showVariablesErrorState(message) {
+            variableDataLoading = false;
+            variableDataLoaded = false;
+            lastVariableLoadError = message || '';
+            setVariableInteractionsEnabled(false);
+            const text = message
+                ? 'Failed to load variable descendants: ' + message
+                : 'Failed to load variable descendants.';
+            renderVariablesMessage(text, 'empty-message');
+        }
+
+        function requestVariableDescendants() {
+            if (!supportsVariableDescendants) {
+                return;
+            }
+
+            if (variableDataLoaded || variableDataLoading) {
+                return;
+            }
+
+            showVariablesLoadingState();
+            vscode.postMessage({ command: 'loadVariableDescendants' });
+        }
+
+        function handleVariablesTabActivated() {
+            if (!supportsVariableDescendants) {
+                return;
+            }
+
+            if (!variableDataLoaded && !variableDataLoading) {
+                requestVariableDescendants();
+            }
+        }
+
         function renderVariableList() {
-            if (!variablesTabEl || !variablesContainerEl || !initialVariableDescendants) {
+            if (!variablesTabEl || !variablesContainerEl) {
+                return;
+            }
+
+            if (!variableDataLoaded) {
+                if (variableDataLoading) {
+                    showVariablesLoadingState();
+                } else if (lastVariableLoadError) {
+                    showVariablesErrorState(lastVariableLoadError);
+                } else {
+                    showVariablesLoadPrompt();
+                }
                 return;
             }
 
@@ -1005,9 +1201,7 @@ export class NodeDetailPanel {
                 variablesContainerEl.innerHTML =
                     '<p class="empty-message">No variable descendants found.</p>';
                 updateVariablesCount(0);
-                if (variablesExportButton) {
-                    variablesExportButton.disabled = true;
-                }
+                setVariableInteractionsEnabled(true);
                 updateVariablesNote();
                 return;
             }
@@ -1016,9 +1210,7 @@ export class NodeDetailPanel {
                 variablesContainerEl.innerHTML =
                     '<p class="empty-message">No variables match the current filter.</p>';
                 updateVariablesCount(0);
-                if (variablesExportButton) {
-                    variablesExportButton.disabled = true;
-                }
+                setVariableInteractionsEnabled(true);
                 updateVariablesNote();
                 return;
             }
@@ -1054,13 +1246,15 @@ export class NodeDetailPanel {
                 '</table>';
 
             updateVariablesCount(filteredVariableNodes.length);
-            if (variablesExportButton) {
-                variablesExportButton.disabled = filteredVariableNodes.length === 0;
-            }
+            setVariableInteractionsEnabled(true);
             updateVariablesNote();
         }
 
         function applyVariableFilter(term) {
+            if (!variableDataLoaded) {
+                return;
+            }
+
             if (!variableNodes.length) {
                 filteredVariableNodes = [];
                 renderVariableList();
@@ -1089,6 +1283,10 @@ export class NodeDetailPanel {
         }
 
         function exportVariablesToExcel() {
+            if (!variableDataLoaded) {
+                return;
+            }
+
             const payloadNodes = filteredVariableNodes.map((variable) => ({
                 nodeId: variable.nodeId || '',
                 displayName: variable.displayName || '',
@@ -1109,7 +1307,7 @@ export class NodeDetailPanel {
                 return;
             }
 
-            if (!initialVariableDescendants) {
+            if (!supportsVariableDescendants) {
                 variablesTabButton.hidden = true;
                 return;
             }
@@ -1125,17 +1323,25 @@ export class NodeDetailPanel {
 
             if (variablesSearchInput) {
                 variablesSearchInput.addEventListener('input', () => {
+                    if (!variableDataLoaded) {
+                        return;
+                    }
                     applyVariableFilter(variablesSearchInput.value);
                 });
+                variablesSearchInput.disabled = !variableDataLoaded;
             }
 
             if (variablesExportButton) {
                 variablesExportButton.addEventListener('click', () => exportVariablesToExcel());
-                variablesExportButton.disabled = filteredVariableNodes.length === 0;
+                variablesExportButton.disabled = !variableDataLoaded || filteredVariableNodes.length === 0;
             }
 
             if (variablesContainerEl) {
                 variablesContainerEl.addEventListener('click', (event) => {
+                    if (!variableDataLoaded) {
+                        return;
+                    }
+
                     const target = event.target;
                     if (!(target instanceof Element)) {
                         return;
@@ -1153,6 +1359,7 @@ export class NodeDetailPanel {
                     }
                 });
             }
+
         }
 
         if (hierarchyContainer) {
@@ -1341,6 +1548,32 @@ export class NodeDetailPanel {
                     break;
                 case 'nodeDataError':
                     showStatusMessage(message.message || 'Failed to refresh node data');
+                    break;
+                case 'hierarchy':
+                    renderHierarchy(Array.isArray(message.data) ? message.data : []);
+                    break;
+                case 'variableDescendants': {
+                    const nodes = Array.isArray(message.data?.nodes) ? message.data.nodes.slice() : [];
+                    variableNodes = nodes;
+                    filteredVariableNodes = nodes.slice();
+                    variablesTruncated = Boolean(message.data?.truncated);
+                    variableDataLoaded = true;
+                    variableDataLoading = false;
+                    lastVariableLoadError = '';
+                    if (variablesSearchInput && variablesSearchInput.value) {
+                        applyVariableFilter(variablesSearchInput.value);
+                    } else {
+                        renderVariableList();
+                    }
+                    break;
+                }
+                case 'variableDescendantsError': {
+                    const errorMessage = typeof message.message === 'string' ? message.message : '';
+                    showVariablesErrorState(errorMessage);
+                    break;
+                }
+                case 'variableDescendantsUnavailable':
+                    showVariablesErrorState('Variable descendants are not available for this node.');
                     break;
             }
         });
