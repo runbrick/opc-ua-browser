@@ -43,13 +43,13 @@ async function handleObjectNodeAddition(
     client: NonNullable<ReturnType<ConnectionManager['getConnection']>>,
     dataViewManager: DataViewManager
 ): Promise<DataViewAdditionResult | undefined> {
-    const addAllOption = '加入全部子节点';
-    const onlySelfOption = '仅加入当前节点';
+    const addAllOption = 'Add All Child Nodes';
+    const onlySelfOption = 'Add Current Node Only';
 
     const nodeLabel = node.displayName || node.label || node.nodeId;
 
     const choice = await vscode.window.showInformationMessage(
-        `节点 "${nodeLabel}" 是对象。是否将其下所有点位加入 Data View？`,
+        `Node "${nodeLabel}" is an object. Add all variables under it to Data View?`,
         { modal: true },
         addAllOption,
         onlySelfOption
@@ -67,21 +67,21 @@ async function handleObjectNodeAddition(
         const result = await vscode.window.withProgress<DataViewAdditionResult | undefined>(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: `正在添加 "${nodeLabel}" 的子节点到 Data View...`,
+                title: `Adding child nodes of "${nodeLabel}" to Data View...`,
                 cancellable: false
             },
             async (progress) => {
-                progress.report({ message: '正在搜索子节点...' });
+                progress.report({ message: 'Searching for child nodes...' });
                 const collected = await client.collectVariableDescendantNodes(node.nodeId, {
                     maxNodes: MAX_VARIABLE_NODES
                 });
 
                 if (collected.nodes.length === 0) {
-                    vscode.window.showInformationMessage('未找到可监控的子节点。');
+                    vscode.window.showInformationMessage('No monitorable child nodes found.');
                     return undefined;
                 }
 
-                progress.report({ message: `发现 ${collected.nodes.length} 个节点，正在添加...` });
+                progress.report({ message: `Found ${collected.nodes.length} nodes, adding...` });
                 return await addMultipleNodes(
                     node.connectionId,
                     collected,
@@ -99,7 +99,7 @@ async function handleObjectNodeAddition(
         return result;
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`添加对象子节点到 Data View 失败：${message}`);
+        vscode.window.showErrorMessage(`Failed to add object child nodes to Data View: ${message}`);
         return undefined;
     }
 }
@@ -118,7 +118,7 @@ async function addMultipleNodes(
     for (let index = 0; index < collected.nodes.length; index++) {
         const nodeInfo = collected.nodes[index];
         progress.report({
-            message: `正在添加 ${index + 1}/${total}：${nodeInfo.displayName || nodeInfo.nodeId}`
+            message: `Adding ${index + 1}/${total}: ${nodeInfo.displayName || nodeInfo.nodeId}`
         });
 
         const alreadyTracked = dataViewManager.hasNode(connectionId, nodeInfo.nodeId);
@@ -138,12 +138,12 @@ async function addMultipleNodes(
 
     if (collected.truncated) {
         vscode.window.showWarningMessage(
-            `已达到 ${MAX_VARIABLE_NODES} 个节点的上限，部分子节点未被添加。`
+            `Reached the limit of ${MAX_VARIABLE_NODES} nodes, some child nodes were not added.`
         );
     }
 
     if (failed > 0) {
-        vscode.window.showWarningMessage(`有 ${failed} 个节点添加失败，请查看输出日志。`);
+        vscode.window.showWarningMessage(`${failed} nodes failed to add, please check the output log.`);
     }
 
     return {
@@ -165,7 +165,7 @@ async function addSingleNode(
 
         if (!alreadyTracked) {
             const name = entry.displayName || entry.nodeId;
-            vscode.window.showInformationMessage(`已添加 "${name}" 到 Data View。`);
+            vscode.window.showInformationMessage(`Added "${name}" to Data View.`);
             return {
                 total: 1,
                 added: 1,
@@ -174,7 +174,7 @@ async function addSingleNode(
             };
         }
 
-        vscode.window.showInformationMessage('该节点已在 Data View 中。');
+        vscode.window.showInformationMessage('This node is already in Data View.');
         return {
             total: 1,
             added: 0,
@@ -191,9 +191,9 @@ async function addSingleNode(
 function showAdditionSummary(result: DataViewAdditionResult): void {
     if (result.total === 1) {
         if (result.added === 1) {
-            vscode.window.showInformationMessage('已添加 1 个节点到 Data View。');
+            vscode.window.showInformationMessage('Added 1 node to Data View.');
         } else if (result.skipped === 1) {
-            vscode.window.showInformationMessage('该节点已在 Data View 中。');
+            vscode.window.showInformationMessage('This node is already in Data View.');
         }
         return;
     }
@@ -205,17 +205,17 @@ function showAdditionSummary(result: DataViewAdditionResult): void {
     const parts: string[] = [];
 
     if (result.added > 0) {
-        parts.push(`新增 ${result.added}`);
+        parts.push(`Added ${result.added}`);
     }
     if (result.skipped > 0) {
-        parts.push(`已存在 ${result.skipped}`);
+        parts.push(`Already exists ${result.skipped}`);
     }
     if (result.failed > 0) {
-        parts.push(`失败 ${result.failed}`);
+        parts.push(`Failed ${result.failed}`);
     }
 
-    const summary = parts.length > 0 ? parts.join('，') : '未添加任何节点';
-    vscode.window.showInformationMessage(`共处理 ${result.total} 个节点：${summary}。`);
+    const summary = parts.length > 0 ? parts.join(', ') : 'No nodes added';
+    vscode.window.showInformationMessage(`Processed ${result.total} nodes: ${summary}.`);
 }
 
 export async function removeNodeFromDataViewCommand(

@@ -7,7 +7,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     private _onDidChangeTreeData: vscode.EventEmitter<TreeNode | undefined | null | void> = new vscode.EventEmitter<TreeNode | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<TreeNode | undefined | null | void> = this._onDidChangeTreeData.event;
 
-    // 缓存节点的父子关系，用于 getParent
+    // Cache node parent-child relationships for getParent
     private nodeParentMap: Map<string, TreeNode> = new Map();
 
     // Tracks whether each connection shows non-hierarchical references
@@ -23,7 +23,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
     }
 
     refreshConnection(connectionId: string): void {
-        // 刷新特定连接节点
+        // Refresh specific connection node
         this.nodeParentMap.clear();
         this._onDidChangeTreeData.fire();
     }
@@ -34,12 +34,12 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
 
     getParent(element: TreeNode): TreeNode | undefined {
         if (element instanceof ConnectionNode) {
-            // 连接节点没有父节点
+            // Connection nodes have no parent node
             return undefined;
         }
 
         if (element instanceof OpcuaNode) {
-            // 从缓存中查找父节点
+            // Find parent node from cache
             const key = `${element.connectionId}:${element.nodeId}`;
             return this.nodeParentMap.get(key);
         }
@@ -49,17 +49,17 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
 
     async getChildren(element?: TreeNode): Promise<TreeNode[]> {
         if (!element) {
-            // 返回所有连接
+            // Return all connections
             return this.getConnectionNodes();
         }
 
         if (element instanceof ConnectionNode) {
-            // 返回服务器的根节点
+            // Return server root nodes
             return this.getRootNodes(element.connectionId);
         }
 
         if (element instanceof OpcuaNode) {
-            // 返回节点的子节点
+            // Return child nodes of the node
             return this.getChildNodes(element.connectionId, element.nodeId, element);
         }
 
@@ -106,7 +106,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 console.log(`Filtered ${references.length - uniqueReferences.length} duplicate root references`);
             }
 
-            // 找到连接节点作为父节点
+            // Find connection node as parent node
             const connectionNode = this.getConnectionNodes().find(
                 node => node instanceof ConnectionNode && (node as ConnectionNode).connectionId === connectionId
             );
@@ -122,7 +122,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 );
             });
 
-            // 缓存父子关系和节点
+            // Cache parent-child relationships and nodes
             if (connectionNode) {
                 nodes.forEach(node => {
                     const key = `${connectionId}:${(node as OpcuaNode).nodeId}`;
@@ -159,7 +159,7 @@ export class OpcuaTreeDataProvider implements vscode.TreeDataProvider<TreeNode> 
                 );
             });
 
-            // 缓存父子关系和节点
+            // Cache parent-child relationships and nodes
             if (parentNode) {
                 nodes.forEach(node => {
                     const key = `${connectionId}:${(node as OpcuaNode).nodeId}`;
@@ -302,7 +302,7 @@ export class OpcuaNode extends TreeNode {
         this.iconPath = this.getNodeIcon(nodeClass);
         this.contextValue = 'opcua-node';
 
-        // 设置点击命令
+        // Set click command
         this.command = {
             command: 'opcua.showNodeDetails',
             title: 'Show Node Details',

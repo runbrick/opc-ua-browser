@@ -1,10 +1,10 @@
 /**
- * OPC UA 标准数据类型映射
- * 将 NodeId 映射到可读的数据类型名称
+ * OPC UA standard data type mapping
+ * Map NodeId to readable data type names
  */
 
 export const OPC_UA_DATA_TYPES: { [key: string]: string } = {
-    // 基本数据类型
+    // Basic data types
     'i=1': 'Boolean',
     'i=2': 'SByte',
     'i=3': 'Byte',
@@ -31,7 +31,7 @@ export const OPC_UA_DATA_TYPES: { [key: string]: string } = {
     'i=24': 'Variant',
     'i=25': 'DiagnosticInfo',
 
-    // 复杂数据类型
+    // Complex data types
     'i=26': 'Number',
     'i=27': 'Integer',
     'i=28': 'UInteger',
@@ -59,13 +59,13 @@ export const OPC_UA_DATA_TYPES: { [key: string]: string } = {
     'i=311': 'SoftwareCertificate',
     'i=312': 'SignedSoftwareCertificate',
     'i=316': 'AddNodesItem',
-    'i=338': 'DeleteNodesItem', // 原来重复：ServerStatusDataType
+    'i=338': 'DeleteNodesItem', // Previously duplicate: ServerStatusDataType
     'i=344': 'AddReferencesItem',
     'i=348': 'DeleteReferencesItem',
     'i=339': 'ServerState',
     'i=371': 'RedundancySupport',
     'i=372': 'ServerDiagnosticsSummaryDataType',
-    'i=376': 'Argument', // 原来重复：ServiceCounterDataType
+    'i=376': 'Argument', // Previously duplicate: ServiceCounterDataType
     'i=377': 'SessionDiagnosticsDataType',
     'i=378': 'SessionSecurityDiagnosticsDataType',
     'i=432': 'SessionCounterDataType',
@@ -90,7 +90,7 @@ export const OPC_UA_DATA_TYPES: { [key: string]: string } = {
     'i=919': 'SemanticChangeStructureDataType',
     'i=920': 'ModelChangeStructureDataType',
 
-    // 数组类型（常见的）
+    // Array types (common)
     'i=7617': 'EnumDefinition',
     'i=7594': 'StructureDefinition',
     'i=12755': 'UABinaryFileDataType',
@@ -100,24 +100,24 @@ export const OPC_UA_DATA_TYPES: { [key: string]: string } = {
 };
 
 /**
- * 解析数据类型 NodeId 为可读名称
- * @param dataTypeNodeId 数据类型的 NodeId（如 'i=10'）
- * @returns 可读的类型名称（如 'Float'）
+ * Parse data type NodeId to readable name
+ * @param dataTypeNodeId Data type NodeId (e.g. 'i=10')
+ * @returns Readable type name (e.g. 'Float')
  */
 export function parseDataType(dataTypeNodeId: string | undefined): string {
     if (!dataTypeNodeId) {
         return 'Unknown';
     }
 
-    // 清理 NodeId 字符串
+    // Clean NodeId string
     const cleanNodeId = dataTypeNodeId.trim();
 
-    // 查找标准类型
+    // Find standard type
     if (OPC_UA_DATA_TYPES[cleanNodeId]) {
         return OPC_UA_DATA_TYPES[cleanNodeId];
     }
 
-    // 如果是数字型 NodeId (ns=0;i=xxx)，尝试简化格式
+    // If numeric NodeId (ns=0;i=xxx), try simplified format
     const match = cleanNodeId.match(/(?:ns=0;)?i=(\d+)/);
     if (match) {
         const simpleId = `i=${match[1]}`;
@@ -126,14 +126,14 @@ export function parseDataType(dataTypeNodeId: string | undefined): string {
         }
     }
 
-    // 对于自定义类型，返回 NodeId 本身
+    // For custom types, return NodeId itself
     return `${cleanNodeId} (Custom)`;
 }
 
 /**
- * 格式化数据类型显示
- * @param dataTypeNodeId 数据类型的 NodeId
- * @returns 格式化后的显示字符串
+ * Format data type display
+ * @param dataTypeNodeId Data type NodeId
+ * @returns Formatted display string
  */
 export function formatDataType(dataTypeNodeId: string | undefined): string {
     if (!dataTypeNodeId) {
@@ -142,32 +142,32 @@ export function formatDataType(dataTypeNodeId: string | undefined): string {
 
     const typeName = parseDataType(dataTypeNodeId);
 
-    // 如果是标准类型，只显示名称
+    // If standard type, show name only
     if (!typeName.includes('Custom')) {
         return typeName;
     }
 
-    // 自定义类型显示名称和 NodeId
+    // Custom type shows name and NodeId
     return typeName;
 }
 
 /**
- * 检查是否为数组类型
- * @param dataTypeNodeId 数据类型的 NodeId
- * @returns 是否为数组
+ * Check if array type
+ * @param dataTypeNodeId Data type NodeId
+ * @returns Whether it is an array
  */
 export function isArrayType(dataTypeNodeId: string | undefined): boolean {
     if (!dataTypeNodeId) {
         return false;
     }
 
-    // 简单检查，可以根据需要扩展
+    // Simple check, can be extended as needed
     return dataTypeNodeId.toLowerCase().includes('array');
 }
 
 /**
- * 获取所有支持的数据类型列表
- * @returns 数据类型名称数组
+ * Get list of all supported data types
+ * @returns Array of data type names
  */
 export function getAllDataTypes(): string[] {
     return Object.values(OPC_UA_DATA_TYPES).sort();

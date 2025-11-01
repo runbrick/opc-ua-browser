@@ -19,20 +19,20 @@ import { addNodeToDataViewCommand } from './commands/dataViewCommands';
 export function activate(context: vscode.ExtensionContext) {
     console.log('OPC UA Browser extension is now active!');
 
-    // 初始化连接管理器
+    // Initialize connection manager
     const connectionManager = new ConnectionManager(context);
     const dataViewManager = new DataViewManager(context, connectionManager);
 
-    // 初始化树视图数据提供者
+    // Initialize tree view data provider
     const treeDataProvider = new OpcuaTreeDataProvider(connectionManager);
 
-    // 注册树视图
+    // Register tree view
     const treeView = vscode.window.createTreeView('opcuaConnections', {
         treeDataProvider,
         showCollapseAll: true
     });
 
-    // 注册命令：添加连接
+    // Register command: Add connection
     const addConnectionCmd = vscode.commands.registerCommand(
         'opcua.addConnection',
         async () => {
@@ -40,7 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：刷新连接列表
+    // Register command: Refresh connection list
     const refreshConnectionsCmd = vscode.commands.registerCommand(
         'opcua.refreshConnections',
         () => {
@@ -48,7 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：连接到服务器
+    // Register command: Connect to server
     const connectCmd = vscode.commands.registerCommand(
         'opcua.connect',
         async (node) => {
@@ -56,7 +56,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：断开连接
+    // Register command: Disconnect
     const disconnectCmd = vscode.commands.registerCommand(
         'opcua.disconnect',
         async (node) => {
@@ -84,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：删除连接
+    // Register command: Delete connection
     const deleteConnectionCmd = vscode.commands.registerCommand(
         'opcua.deleteConnection',
         async (node) => {
@@ -98,7 +98,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：显示节点详情
+    // Register command: Show node details
     const showNodeDetailsCmd = vscode.commands.registerCommand(
         'opcua.showNodeDetails',
         async (node: OpcuaNode | { connectionId?: string; nodeId?: string }) => {
@@ -119,7 +119,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：添加监控节点到 Data View
+    // Register command: Add monitored node to Data View
     const addNodeToDataViewCmd = vscode.commands.registerCommand(
         'opcua.dataView.addNode',
         async (node: OpcuaNode) => {
@@ -137,7 +137,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：导出节点为 Excel
+    // Register command: Export node to Excel
     const exportNodeToExcelCmd = vscode.commands.registerCommand(
         'opcua.exportNodeToExcel',
         async (node: OpcuaNode) => {
@@ -147,7 +147,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 注册命令：搜索节点
+    // Register command: Search nodes
     const searchNodesCmd = vscode.commands.registerCommand(
         'opcua.searchNodes',
         async () => {
@@ -168,7 +168,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // 将所有命令和资源添加到订阅中
+    // Add all commands and resources to subscriptions
     context.subscriptions.push(
         treeView,
         dataViewManager,
@@ -187,7 +187,7 @@ export function activate(context: vscode.ExtensionContext) {
         toggleNonHierarchicalCmd
     );
 
-    // 欢迎消息
+    // Welcome message
     vscode.window.showInformationMessage('OPC UA Browser is ready!');
 }
 
