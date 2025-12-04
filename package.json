@@ -4,7 +4,7 @@
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
   "icon": "resources/opcua-icon.png",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -172,6 +172,18 @@
           "group": "inline@3"
         }
       ]
+    },
+    "configuration": {
+      "title": "OPC UA Browser",
+      "properties": {
+        "opcua.dataView.refreshInterval": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 60000,
+          "description": "Data view refresh interval in milliseconds (500ms - 60s)"
+        }
+      }
     }
   },
   "scripts": {
@@ -179,6 +191,7 @@
     "compile": "webpack",
     "watch": "webpack --watch",
     "package": "webpack --mode production --devtool hidden-source-map",
+    "vsce:package": "vsce package",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
@@ -193,6 +206,7 @@
     "@typescript-eslint/eslint-plugin": "^5.45.0",
     "@typescript-eslint/parser": "^5.45.0",
     "@vscode/test-electron": "^2.2.0",
+    "@vscode/vsce": "^3.7.1",
     "eslint": "^8.28.0",
     "node-loader": "^2.1.0",
     "ts-loader": "^9.4.1",

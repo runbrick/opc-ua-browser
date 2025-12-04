@@ -87,6 +87,12 @@ export class DataViewPanel {
                         await this.dataViewManager.setColumnPreferences(this.columnPreferences);
                     }
                     break;
+                case 'updateRefreshInterval':
+                    if (typeof message.interval === 'number') {
+                        const config = vscode.workspace.getConfiguration('opcua.dataView');
+                        await config.update('refreshInterval', message.interval, vscode.ConfigurationTarget.Global);
+                    }
+                    break;
             }
         }, null, this.disposables);
     }
@@ -281,6 +287,8 @@ export class DataViewPanel {
         const columns = this.serializeForWebview(DataViewPanel.COLUMN_DEFINITIONS);
         const entriesSerialized = this.serializeForWebview(entries);
         const preferencesSerialized = this.serializeForWebview(columnPreferences.length > 0 ? columnPreferences : this.getDefaultColumns());
+        const config = vscode.workspace.getConfiguration('opcua.dataView');
+        const refreshInterval = config.get<number>('refreshInterval', 2000);
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -324,6 +332,35 @@ export class DataViewPanel {
 
         button:hover {
             background: var(--vscode-button-hoverBackground);
+        }
+
+        .refresh-interval-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .refresh-interval-container label {
+            color: var(--vscode-foreground);
+            white-space: nowrap;
+        }
+
+        .refresh-interval-container input {
+            all: unset;
+            width: 80px;
+            padding: 4px 8px;
+            border: 1px solid var(--vscode-input-border);
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border-radius: 4px;
+        }
+
+        .refresh-interval-container input:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+        }
+
+        .refresh-interval-container span {
+            color: var(--vscode-descriptionForeground);
         }
 
         .column-selector {
@@ -420,6 +457,11 @@ export class DataViewPanel {
     <div class="toolbar">
         <button data-action="refresh">Refresh Now</button>
         <button data-action="clear">Clear All</button>
+        <div class="refresh-interval-container">
+            <label for="refreshInterval">Refresh Interval:</label>
+            <input type="number" id="refreshInterval" min="500" max="60000" step="100" value="${refreshInterval}" />
+            <span>ms</span>
+        </div>
         <span class="status" id="status"></span>
     </div>
     <div class="column-selector" id="columnSelector"></div>
@@ -440,6 +482,7 @@ export class DataViewPanel {
         let activeColumns = ${preferencesSerialized};
         let latestRows = [];
         let refreshTimer;
+        let currentRefreshInterval = ${refreshInterval};
 
         const state = vscode.getState();
         if (state?.activeColumns && Array.isArray(state.activeColumns) && state.activeColumns.length > 0) {
@@ -610,6 +653,26 @@ export class DataViewPanel {
             vscode.postMessage({ command: 'clearAll' });
         });
 
+        const refreshIntervalInput = document.getElementById('refreshInterval');
+        refreshIntervalInput.addEventListener('change', (event) => {
+            const input = event.target;
+            let value = parseInt(input.value, 10);
+            if (isNaN(value) || value < 500) {
+                value = 500;
+            } else if (value > 60000) {
+                value = 60000;
+            }
+            input.value = value;
+            currentRefreshInterval = value;
+            vscode.postMessage({ command: 'updateRefreshInterval', interval: value });
+
+            // Restart the refresh timer with the new interval
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+            }
+            refreshTimer = setInterval(() => requestData(), currentRefreshInterval);
+        });
+
         window.addEventListener('message', (event) => {
             const message = event.data;
             if (!message) {
@@ -651,7 +714,7 @@ export class DataViewPanel {
             renderColumnSelector();
             renderTable();
             requestData();
-            refreshTimer = setInterval(() => requestData(), 2000);
+            refreshTimer = setInterval(() => requestData(), currentRefreshInterval);
         }
 
         window.addEventListener('unload', () => {
