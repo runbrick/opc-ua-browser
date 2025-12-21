@@ -16,6 +16,7 @@ import {
     BrowseResult,
     ReferenceTypeIds
 } from 'node-opcua';
+import * as fs from 'fs';
 import {
     OpcuaConnectionConfig,
     OpcuaNodeInfo,
@@ -115,8 +116,8 @@ export class OpcuaClient {
         try {
             this._status = ConnectionStatus.Connecting;
 
-            // Create OPC UA client
-            this.client = OPCUAClient.create({
+            // Prepare client options
+            const clientOptions: any = {
                 applicationName: 'VSCode OPC UA Browser',
                 connectionStrategy: {
                     initialDelay: 1000,
@@ -125,17 +126,38 @@ export class OpcuaClient {
                 securityMode: this.parseSecurityMode(this.config.securityMode),
                 securityPolicy: this.parseSecurityPolicy(this.config.securityPolicy),
                 endpointMustExist: false
-            });
+            };
+
+            // Add certificate configuration if using Certificate authentication
+            if (this.config.authType === 'Certificate' &&
+                this.config.clientCertificatePath &&
+                this.config.clientPrivateKeyPath) {
+                try {
+                    clientOptions.certificateFile = this.config.clientCertificatePath;
+                    clientOptions.privateKeyFile = this.config.clientPrivateKeyPath;
+                } catch (error) {
+                    throw new Error(`Failed to load certificate files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                }
+            }
+
+            // Create OPC UA client
+            this.client = OPCUAClient.create(clientOptions);
 
             // Connect to server
             await this.client.connect(this.config.endpointUrl);
 
-            // Create session
+            // Create session based on authentication type
             if (this.config.authType === 'UserPassword' && this.config.username && this.config.password) {
                 this.session = await this.client.createSession({
                     userName: this.config.username,
                     password: this.config.password,
                     type: UserTokenType.UserName
+                });
+            } else if (this.config.authType === 'Certificate') {
+                // For certificate authentication, the certificate is already configured in the client
+                // Create an anonymous session (the certificate is used for connection security)
+                this.session = await this.client.createSession({
+                    type: UserTokenType.Anonymous
                 });
             } else {
                 this.session = await this.client.createSession({

@@ -7,10 +7,12 @@ export interface ConnectionEditorResult {
     endpointUrl: string;
     securityMode: string;
     securityPolicy: string;
-    authType: 'Anonymous' | 'UserPassword';
+    authType: 'Anonymous' | 'UserPassword' | 'Certificate';
     username?: string;
     password?: string;
     clearPassword?: boolean;
+    clientCertificatePath?: string;
+    clientPrivateKeyPath?: string;
 }
 
 export interface ConnectionEditorOptions {
@@ -22,7 +24,9 @@ type WebviewMessage =
     | { command: 'ready' }
     | { command: 'discoverEndpoints'; endpointUrl?: unknown }
     | { command: 'submit'; values?: unknown }
-    | { command: 'cancel' };
+    | { command: 'cancel' }
+    | { command: 'selectCertificate' }
+    | { command: 'selectPrivateKey' };
 
 interface InitializePayload {
     mode: 'create' | 'edit';
@@ -32,8 +36,10 @@ interface InitializePayload {
         endpointUrl: string;
         securityMode: string;
         securityPolicy: string;
-        authType: 'Anonymous' | 'UserPassword';
+        authType: 'Anonymous' | 'UserPassword' | 'Certificate';
         username?: string;
+        clientCertificatePath?: string;
+        clientPrivateKeyPath?: string;
     };
     hasStoredPassword: boolean;
 }
@@ -107,7 +113,9 @@ export class ConnectionEditorPanel {
                 securityMode: config?.securityMode ?? 'None',
                 securityPolicy: config?.securityPolicy ?? 'None',
                 authType: config?.authType ?? 'Anonymous',
-                username: config?.username ?? ''
+                username: config?.username ?? '',
+                clientCertificatePath: config?.clientCertificatePath ?? '',
+                clientPrivateKeyPath: config?.clientPrivateKeyPath ?? ''
             },
             hasStoredPassword: Boolean(config?.password)
         };
@@ -120,6 +128,12 @@ export class ConnectionEditorPanel {
                 break;
             case 'discoverEndpoints':
                 await this.handleDiscoverEndpoints(message.endpointUrl);
+                break;
+            case 'selectCertificate':
+                await this.handleSelectCertificate();
+                break;
+            case 'selectPrivateKey':
+                await this.handleSelectPrivateKey();
                 break;
             case 'submit':
                 this.handleSubmit(message.values);
@@ -153,6 +167,44 @@ export class ConnectionEditorPanel {
         }
     }
 
+    private async handleSelectCertificate(): Promise<void> {
+        const result = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: {
+                'Certificate Files': ['pem', 'crt', 'cer', 'der'],
+                'All Files': ['*']
+            },
+            title: 'Select Client Certificate'
+        });
+
+        if (result && result[0]) {
+            this.postMessage('certificateSelected', {
+                path: result[0].fsPath
+            });
+        }
+    }
+
+    private async handleSelectPrivateKey(): Promise<void> {
+        const result = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            filters: {
+                'Private Key Files': ['pem', 'key'],
+                'All Files': ['*']
+            },
+            title: 'Select Client Private Key'
+        });
+
+        if (result && result[0]) {
+            this.postMessage('privateKeySelected', {
+                path: result[0].fsPath
+            });
+        }
+    }
+
     private handleSubmit(values: unknown): void {
         if (!values || typeof values !== 'object') {
             this.postMessage('submitError', { error: 'Invalid form data received.' });
@@ -168,7 +220,9 @@ export class ConnectionEditorPanel {
             typeof payload.securityMode === 'string' ? payload.securityMode : '';
         const securityPolicy =
             typeof payload.securityPolicy === 'string' ? payload.securityPolicy : '';
-        const authType = payload.authType === 'UserPassword' ? 'UserPassword' : 'Anonymous';
+        const authType = payload.authType === 'Certificate' ? 'Certificate'
+            : payload.authType === 'UserPassword' ? 'UserPassword'
+            : 'Anonymous';
         const username =
             typeof payload.username === 'string' && payload.username.trim().length > 0
                 ? payload.username.trim()
@@ -178,6 +232,14 @@ export class ConnectionEditorPanel {
                 ? payload.password
                 : undefined;
         const clearPassword = payload.clearPassword === true;
+        const clientCertificatePath =
+            typeof payload.clientCertificatePath === 'string' && payload.clientCertificatePath.trim().length > 0
+                ? payload.clientCertificatePath.trim()
+                : undefined;
+        const clientPrivateKeyPath =
+            typeof payload.clientPrivateKeyPath === 'string' && payload.clientPrivateKeyPath.trim().length > 0
+                ? payload.clientPrivateKeyPath.trim()
+                : undefined;
 
         if (!name) {
             this.postMessage('submitError', { error: 'Connection name is required.' });
@@ -212,6 +274,13 @@ export class ConnectionEditorPanel {
             return;
         }
 
+        if (authType === 'Certificate' && (!clientCertificatePath || !clientPrivateKeyPath)) {
+            this.postMessage('submitError', {
+                error: 'Both certificate and private key files are required for Certificate authentication.'
+            });
+            return;
+        }
+
         const result: ConnectionEditorResult = {
             name,
             endpointUrl,
@@ -220,7 +289,9 @@ export class ConnectionEditorPanel {
             authType,
             username,
             password,
-            clearPassword: authType === 'UserPassword' ? clearPassword : undefined
+            clearPassword: authType === 'UserPassword' ? clearPassword : undefined,
+            clientCertificatePath,
+            clientPrivateKeyPath
         };
 
         this.complete(result);
@@ -439,6 +510,7 @@ export class ConnectionEditorPanel {
                 <select id="authType">
                     <option value="Anonymous">Anonymous (no credentials)</option>
                     <option value="UserPassword">Username / Password</option>
+                    <option value="Certificate">X.509 Certificate</option>
                 </select>
             </div>
 
@@ -456,6 +528,25 @@ export class ConnectionEditorPanel {
                     <input id="clearPassword" type="checkbox" />
                     <span>Clear stored password</span>
                 </label>
+            </div>
+
+            <div id="certificateSection" class="credentials" style="display:none;">
+                <div>
+                    <label for="clientCertificatePath">Client Certificate</label>
+                    <div class="endpoint-row">
+                        <input id="clientCertificatePath" type="text" maxlength="512" placeholder="Path to client certificate (.pem, .crt, .cer)" readonly />
+                        <button type="button" id="selectCertificateButton" class="secondary">Browse</button>
+                    </div>
+                    <div class="hint">Select the client certificate file (.pem, .crt, .cer, .der)</div>
+                </div>
+                <div>
+                    <label for="clientPrivateKeyPath">Client Private Key</label>
+                    <div class="endpoint-row">
+                        <input id="clientPrivateKeyPath" type="text" maxlength="512" placeholder="Path to private key (.pem, .key)" readonly />
+                        <button type="button" id="selectPrivateKeyButton" class="secondary">Browse</button>
+                    </div>
+                    <div class="hint">Select the private key file (.pem, .key)</div>
+                </div>
             </div>
 
             <div id="message" class="message"></div>
@@ -484,6 +575,11 @@ export class ConnectionEditorPanel {
             passwordHint: document.getElementById('passwordHint'),
             clearPasswordRow: document.getElementById('clearPasswordRow'),
             clearPassword: document.getElementById('clearPassword'),
+            certificateSection: document.getElementById('certificateSection'),
+            clientCertificatePath: document.getElementById('clientCertificatePath'),
+            clientPrivateKeyPath: document.getElementById('clientPrivateKeyPath'),
+            selectCertificateButton: document.getElementById('selectCertificateButton'),
+            selectPrivateKeyButton: document.getElementById('selectPrivateKeyButton'),
             message: document.getElementById('message'),
             saveButton: document.getElementById('saveButton'),
             cancelButton: document.getElementById('cancelButton')
@@ -541,10 +637,13 @@ export class ConnectionEditorPanel {
         }
 
         function toggleCredentialsSection(authType) {
-            const show = authType === 'UserPassword';
-            elements.credentialsSection.style.display = show ? 'grid' : 'none';
+            const showUserPassword = authType === 'UserPassword';
+            const showCertificate = authType === 'Certificate';
 
-            if (show) {
+            elements.credentialsSection.style.display = showUserPassword ? 'grid' : 'none';
+            elements.certificateSection.style.display = showCertificate ? 'grid' : 'none';
+
+            if (showUserPassword) {
                 if (state.mode === 'create') {
                     elements.passwordHint.textContent = 'Provide credentials required by the server.';
                     elements.clearPasswordRow.style.display = 'none';
@@ -559,6 +658,11 @@ export class ConnectionEditorPanel {
                 elements.username.value = '';
                 elements.password.value = '';
                 elements.clearPassword.checked = false;
+            }
+
+            if (!showCertificate) {
+                elements.clientCertificatePath.value = '';
+                elements.clientPrivateKeyPath.value = '';
             }
         }
 
@@ -576,8 +680,18 @@ export class ConnectionEditorPanel {
         });
 
         elements.authType.addEventListener('change', (event) => {
-            const auth = event.target.value === 'UserPassword' ? 'UserPassword' : 'Anonymous';
+            const auth = event.target.value === 'Certificate' ? 'Certificate'
+                : event.target.value === 'UserPassword' ? 'UserPassword'
+                : 'Anonymous';
             toggleCredentialsSection(auth);
+        });
+
+        elements.selectCertificateButton.addEventListener('click', () => {
+            sendMessage('selectCertificate');
+        });
+
+        elements.selectPrivateKeyButton.addEventListener('click', () => {
+            sendMessage('selectPrivateKey');
         });
 
         elements.discover.addEventListener('click', () => {
@@ -606,10 +720,14 @@ export class ConnectionEditorPanel {
                 endpointUrl: elements.endpoint.value.trim(),
                 securityMode: securityMode || 'None',
                 securityPolicy: securityPolicy || 'None',
-                authType: elements.authType.value === 'UserPassword' ? 'UserPassword' : 'Anonymous',
+                authType: elements.authType.value === 'Certificate' ? 'Certificate'
+                    : elements.authType.value === 'UserPassword' ? 'UserPassword'
+                    : 'Anonymous',
                 username: elements.username.value.trim(),
                 password: elements.password.value,
-                clearPassword: elements.clearPassword.checked
+                clearPassword: elements.clearPassword.checked,
+                clientCertificatePath: elements.clientCertificatePath.value.trim(),
+                clientPrivateKeyPath: elements.clientPrivateKeyPath.value.trim()
             };
 
             setLoading(true);
@@ -630,6 +748,8 @@ export class ConnectionEditorPanel {
                     elements.username.value = data.values.username || '';
                     elements.password.value = '';
                     elements.clearPassword.checked = false;
+                    elements.clientCertificatePath.value = data.values.clientCertificatePath || '';
+                    elements.clientPrivateKeyPath.value = data.values.clientPrivateKeyPath || '';
 
                     setSecurityOptions(
                         [{ securityMode: data.values.securityMode, securityPolicy: data.values.securityPolicy }],
@@ -665,6 +785,12 @@ export class ConnectionEditorPanel {
                 case 'submitError':
                     setLoading(false);
                     setMessage('error', data?.error || 'Validation failed.');
+                    break;
+                case 'certificateSelected':
+                    elements.clientCertificatePath.value = data?.path || '';
+                    break;
+                case 'privateKeySelected':
+                    elements.clientPrivateKeyPath.value = data?.path || '';
                     break;
             }
         });

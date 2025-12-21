@@ -51,9 +51,10 @@ OPC UA Browser is a Visual Studio Code extension for exploring and interacting w
 - The connection editor supports:
   - Custom display name and endpoint URL (default prefix `opc.tcp://`).
   - **Discover Endpoints** to poll the server and populate matching security mode/policy combinations.
-  - Selection between `Anonymous` and `User & Password` authentication.
+  - Selection between `Anonymous`, `User & Password`, and `X.509 Certificate` authentication.
   - Optional username and password storage (only when `User & Password` is chosen).
-- Saved connections persist across VS Code sessions in the extension’s global storage.
+  - Certificate and private key file selection (only when `X.509 Certificate` is chosen).
+- Saved connections persist across VS Code sessions in the extension's global storage.
 
 ### Editing or removing a connection
 
@@ -142,9 +143,23 @@ OPC UA Browser is a Visual Studio Code extension for exploring and interacting w
 
 ## Data Persistence and Security
 
-- Connection profiles and Data View selections are stored in VS Code’s global state for the current user. Remove entries via the UI if you no longer need them.
-- Saved passwords are kept in the same storage area and are not encrypted beyond VS Code’s own storage mechanism. Avoid storing credentials on shared machines and use the **Clear stored password** option when editing a connection to remove them.
+- Connection profiles and Data View selections are stored in VS Code's global state for the current user. Remove entries via the UI if you no longer need them.
+- Saved passwords are kept in the same storage area and are not encrypted beyond VS Code's own storage mechanism. Avoid storing credentials on shared machines and use the **Clear stored password** option when editing a connection to remove them.
+- Certificate file paths are stored in connection profiles but the actual certificate files remain on your file system. Ensure certificate and private key files have appropriate file permissions.
 - Excel exports are written only to paths you select during the export workflow; the extension does not transmit data outside your workstation.
+
+### Using X.509 Certificate Authentication
+
+For OPC UA servers that require certificate-based authentication:
+
+1. Obtain a client certificate and private key from your OPC UA server administrator or certificate authority.
+2. When creating or editing a connection, select **X.509 Certificate** as the authentication type.
+3. Click **Browse** to select your client certificate file (formats: `.pem`, `.crt`, `.cer`, `.der`).
+4. Click **Browse** to select your client private key file (formats: `.pem`, `.key`).
+5. Choose the appropriate security mode (`Sign` or `SignAndEncrypt`) and security policy (e.g., `Basic256Sha256`).
+6. Save the connection and connect to the server.
+
+**Note:** The certificate must be trusted by the OPC UA server. Contact your server administrator to add your client certificate to the server's trusted certificates list if you encounter authentication errors.
 
 ## Troubleshooting
 

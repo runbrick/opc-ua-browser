@@ -6,9 +6,12 @@ export interface OpcuaConnectionConfig {
     endpointUrl: string;
     securityMode: string;
     securityPolicy: string;
-    authType: 'Anonymous' | 'UserPassword';
+    authType: 'Anonymous' | 'UserPassword' | 'Certificate';
     username?: string;
     password?: string;
+    // Certificate authentication fields
+    clientCertificatePath?: string;
+    clientPrivateKeyPath?: string;
 }
 
 export interface OpcuaNodeInfo {

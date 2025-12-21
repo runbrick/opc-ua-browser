@@ -4,7 +4,7 @@
   "displayName": "OPC UA Browser",
   "description": "A VSCode extension to browse and interact with OPC UA servers",
   "icon": "resources/opcua-icon.png",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "license": "MIT",
   "repository": {
     "type": "git",
